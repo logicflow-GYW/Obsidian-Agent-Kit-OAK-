@@ -1,0 +1,10 @@
+{
+    "id": "Obsidian-Agent-Kit(OAK)",
+    "name": "Obsidian-Agent-Kit(OAK)",
+    "version": "1.0.0",
+    "minAppVersion": "0.15.0",
+    "description": "Obsidian-Agent-Kit(OAK)",
+    "author": "logicflow-GYW",
+    "authorUrl": "",
+    "isDesktopOnly": false
+}

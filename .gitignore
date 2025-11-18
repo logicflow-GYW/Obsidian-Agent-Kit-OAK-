@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Env
+.env
+.venv
+venv/
+virtualenv/
+
+# Logs and databases
+*.log
+*.db
+
+# Ignore the sync script itself
+sync_generic.py
