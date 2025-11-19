@@ -1,89 +1,102 @@
-import { Notice, Plugin } from "obsidian";
-import { BaseAgent } from "./BaseAgent";
-import { PluginData } from "./types";
+// src/core/Orchestrator.ts
+import { Notice } from "obsidian";
+import { BaseAgent, IAgentPluginContext } from "./BaseAgent"; // --- ä¿®æ”¹ ---: å¼•å…¥æ¥å£
+import { TaskItem } from "./types";
 
 export class Orchestrator {
-    private isRunning = false;
+    private _isRunning = false;
     private agents: BaseAgent<any>[] = [];
-    // ±£´æ plugin ÒıÓÃ
-    private plugin: Plugin & { data: PluginData, saveData: () => Promise<void> };
+    
+    // --- ä¿®æ”¹ ---: ä½¿ç”¨æ¥å£ç±»å‹ï¼Œè·å¾—å®Œæ•´çš„ä»£ç æç¤º
+    private plugin: IAgentPluginContext;
 
-    constructor(plugin: any) {
+    public get isRunning(): boolean {
+        return this._isRunning;
+    }
+
+    // --- ä¿®æ”¹ ---: æ„é€ å‡½æ•°ç±»å‹å®‰å…¨åŒ–
+    constructor(plugin: IAgentPluginContext) {
         this.plugin = plugin;
     }
 
-    /**
-     * ×¢²áÒ»¸öÖÇÄÜÌå
-     */
     registerAgent(agent: BaseAgent<any>) {
         this.agents.push(agent);
+        // ä½¿ç”¨æ¥å£åï¼Œè¿™é‡Œçš„ data å’Œ queues éƒ½ä¼šæœ‰è‡ªåŠ¨è¡¥å…¨
         if (!this.plugin.data.queues[agent.queueName]) {
             this.plugin.data.queues[agent.queueName] = [];
         }
-        console.log(`[Orchestrator] ÒÑ×¢²á Agent: ${agent.constructor.name} -> ¼àÌı¶ÓÁĞ: ${agent.queueName}`);
+        // --- ä¿®æ”¹ ---: ä½¿ç”¨ info çº§åˆ«è®°å½•ç”Ÿå‘½å‘¨æœŸäº‹ä»¶
+        console.info(`[Orchestrator] å·²æ³¨å†Œ Agent: ${agent.constructor.name} -> ç›‘æ§é˜Ÿåˆ—: ${agent.queueName}`);
     }
 
-    /**
-     * Ìí¼ÓÈÎÎñµ½¶ÓÁĞ (Agent ¿ÉÒÔµ÷ÓÃ´Ë·½·¨½øĞĞÈÎÎñÁ÷×ª)
-     */
-    async addToQueue(queueName: string, item: any) {
+    async addToQueue(queueName: string, item: TaskItem) {
         if (!this.plugin.data.queues[queueName]) {
             this.plugin.data.queues[queueName] = [];
         }
+        item.retries = 0;
         this.plugin.data.queues[queueName].push(item);
         await this.plugin.saveData();
-        // ¿ÉÑ¡£º¸ø¸öÌáÊ¾
-        // new Notice(`[${queueName}] +1 ÈÎÎñ`);
     }
 
     start() {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        new Notice("•0‹4 ÒıÇæÒÑÆô¶¯");
+        if (this._isRunning) return;
+        this._isRunning = true;
+        new Notice("ğŸš€ OAK å¼•æ“å·²å¯åŠ¨");
         this.loop();
     }
 
     stop() {
-        this.isRunning = false;
-        new Notice("•0“5 ÒıÇæÒÑÔİÍ£");
+        this._isRunning = false;
+        new Notice("ğŸ›‘ OAK å¼•æ“å·²åœæ­¢");
     }
 
     private async loop() {
-        if (!this.isRunning) return;
+        if (!this._isRunning) return;
 
         let workDone = false;
 
         for (const agent of this.agents) {
-            if (!this.isRunning) break;
+            if (!this._isRunning) break;
 
             const queueName = agent.queueName;
             const queue = this.plugin.data.queues[queueName];
 
             if (queue && queue.length > 0) {
-                const item = queue[0]; // Peek
+                const item = queue[0]; 
                 
                 try {
-                    // Ö´ĞĞ´¦Àí
                     const success = await agent.process(item);
                     
                     if (success) {
-                        queue.shift(); // ³É¹¦ºóÒÆ³ı
-                        await this.plugin.saveData();
+                        queue.shift(); 
                         workDone = true;
-                        // ÕâÒ»ÂÖÖ»×öÒ»¸öÈÎÎñ£¬±ÜÃâ¿¨¶Ù
-                        break; 
+                    } else {
+                        throw new Error("Agent process returned false.");
                     }
-                } catch (error) {
-                    console.error(`[Agent Error] ${agent.constructor.name}:`, error);
-                    new Notice(`Agent ${agent.constructor.name} ³ö´í: ${error.message}`);
-                    // ¼òµ¥µÄ·ÀËÀÑ­»·»úÖÆ£º³ö´íÁË¾ÍÔİÍ£
-                    this.stop();
-                    break;
+                } catch (error: unknown) { // --- ä¿®æ”¹ ---: æ ‡å‡†åŒ–é”™è¯¯æ•è·
+                    const err = error instanceof Error ? error : new Error(String(error));
+                    console.error(`[Agent Error] ${agent.constructor.name} å¤„ç†ä»»åŠ¡å¤±è´¥:`, item, err);
+                    workDone = true; 
+                    
+                    const failedItem = queue.shift(); 
+                    if (failedItem) {
+                        failedItem.retries = (failedItem.retries || 0) + 1;
+                        
+                        const maxRetries = this.plugin.data.settings.maxRetries || 3;
+                        if (failedItem.retries < maxRetries) {
+                            queue.push(failedItem);
+                            new Notice(`ä»»åŠ¡å¤±è´¥ï¼Œå°†åœ¨ç¨åé‡è¯• (${failedItem.retries}/${maxRetries})`);
+                        } else {
+                            new Notice(`ä»»åŠ¡å·²è¾¾æœ€å¤§é‡è¯•æ¬¡æ•°ï¼Œå·²è¢«æ”¾å¼ƒã€‚è¯·æ£€æŸ¥æ—¥å¿—ã€‚`);
+                            console.error(`[Agent Error] ä»»åŠ¡æ°¸ä¹…å¤±è´¥:`, failedItem);
+                        }
+                    }
+                } finally {
+                    await this.plugin.saveData();
                 }
             }
         }
 
-        // ¶¯Ì¬µ÷ÕûĞÄÌø£ºÓĞ»î¸É¾Í¿ìµã(100ms)£¬Ã»»î¸É¾ÍĞİÃß(2000ms)
         const delay = workDone ? 100 : 2000; 
         setTimeout(() => this.loop(), delay);
     }

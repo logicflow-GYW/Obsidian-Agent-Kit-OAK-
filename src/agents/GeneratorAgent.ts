@@ -1,49 +1,45 @@
+// src/agents/GeneratorAgent.ts
 import { BaseAgent } from "../core/BaseAgent";
-import { normalizePath, TFile } from "obsidian"; // <--- 1. 别忘了导入这些！
+import { TaskItem } from "../core/types";
 
-interface GenTask {
+interface GenerationTask extends TaskItem {
     concept: string;
 }
 
-export class GeneratorAgent extends BaseAgent<GenTask> {
-    get queueName() {
-        return "generation_queue";
+export class GeneratorAgent extends BaseAgent<GenerationTask> {
+    public static readonly QUEUE_NAME = "generation_queue";
+
+    get queueName(): string {
+        return GeneratorAgent.QUEUE_NAME;
     }
 
-    async process(task: GenTask): Promise<boolean> {
-        console.log(`[Generator] Processing: ${task.concept}`);
-
-        // 🛡️ 防御性编程：如果配置没读到，先报错而不是崩溃
-        if (!this.settings) {
-            throw new Error("无法读取插件设置，请检查 BaseAgent.ts");
-        }
-
-        const prompt = this.settings.prompt_generator.replace("{concept}", task.concept);
+    async process(item: GenerationTask): Promise<boolean> {
+        // --- 修改 ---: 使用 debug 级别记录详细处理过程
+        console.debug(`[GeneratorAgent] 正在处理概念: ${item.concept}`);
+        
+        const prompt = this.settings.prompt_generator.replace('{concept}', item.concept);
+        
         const content = await this.llm.chat(prompt);
 
-        if (content) {
-            const fileName = `${task.concept}.md`;
-            // 确保输出目录不为空，默认为根目录
-            const folderPath = this.settings.output_dir || ""; 
-            const filePath = normalizePath(`${folderPath}/${fileName}`);
-
-            // 自动创建文件夹（如果不存在）
-            if (folderPath !== "" && !this.app.vault.getAbstractFileByPath(folderPath)) {
-                 await this.app.vault.createFolder(folderPath);
-            }
-
-            const fileExists = this.app.vault.getAbstractFileByPath(filePath);
-
-            if (fileExists) {
-                console.log(`文件已存在，跳过: ${filePath}`);
-                // 如果你想覆盖，可以用: await this.app.vault.modify(fileExists as TFile, content);
-            } else {
-                await this.app.vault.create(filePath, content);
-                console.log(`已创建文件: ${filePath}`);
-            }
+        if (!content || content.trim().length === 0) {
+            console.error("[GeneratorAgent] LLM 返回内容为空。");
+            return false;
         }
 
-        console.log(`[Generator] Generated content for ${task.concept}`);
+        const outputDir = this.settings.output_dir;
+        const fileName = `${item.concept.replace(/[\\/:"*?<>|]/g, '_')}.md`;
+        const filePath = `${outputDir}/${fileName}`;
+
+        const fileExists = await this.app.vault.adapter.exists(filePath);
+        if (fileExists) {
+            console.warn(`[GeneratorAgent] 文件已存在，跳过创建: ${filePath}`);
+            return true; 
+        }
+
+        await this.app.vault.create(filePath, content);
+        // --- 修改 ---: 成功创建属于重要信息，可以使用 info 或 debug，这里选 debug 保持一致性
+        console.debug(`[GeneratorAgent] 已成功创建文件: ${filePath}`);
+        
         return true;
     }
 }

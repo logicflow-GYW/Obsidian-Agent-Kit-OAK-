@@ -3,10 +3,11 @@ import { requestUrl, Notice } from "obsidian";
 import { OAKSettings } from "./types";
 
 export class LLMProvider {
-    constructor(private settings: OAKSettings) {}
+    constructor(private getSettings: () => OAKSettings) {}
 
     async chat(prompt: string): Promise<string> {
-        const provider = this.settings.llmProvider;
+        const settings = this.getSettings();
+        const provider = settings.llmProvider;
 
         try {
             if (provider === "openai") {
@@ -16,27 +17,30 @@ export class LLMProvider {
             } else {
                 throw new Error(`未知的提供商: ${provider}`);
             }
-        } catch (error) {
+        } catch (error: unknown) { // --- 修改 ---: 使用 unknown 类型
+            // --- 修改 ---: 安全地获取错误信息
+            const msg = error instanceof Error ? error.message : String(error);
             console.error("[LLM Error]", error);
-            new Notice(`AI 调用失败: ${error.message}`);
-            return ""; // 返回空字符串表示失败
+            new Notice(`AI 调用失败: ${msg}`);
+            return ""; 
         }
     }
 
     private async callOpenAI(prompt: string): Promise<string> {
-        if (!this.settings.openaiApiKey) throw new Error("OpenAI API Key 未配置");
+        const settings = this.getSettings();
+        if (!settings.openaiApiKey) throw new Error("OpenAI API Key 未配置");
 
-        const url = `${this.settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
+        const url = `${settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
         
         const response = await requestUrl({
             url: url,
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${this.settings.openaiApiKey}`
+                "Authorization": `Bearer ${settings.openaiApiKey}`
             },
             body: JSON.stringify({
-                model: this.settings.openaiModel,
+                model: settings.openaiModel,
                 messages: [{ role: "user", content: prompt }],
                 temperature: 0.7
             })
@@ -50,9 +54,10 @@ export class LLMProvider {
     }
 
     private async callGoogle(prompt: string): Promise<string> {
-        if (!this.settings.googleApiKey) throw new Error("Google API Key 未配置");
+        const settings = this.getSettings(); 
+        if (!settings.googleApiKey) throw new Error("Google API Key 未配置");
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.settings.googleModel}:generateContent?key=${this.settings.googleApiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${settings.googleApiKey}`;
 
         const response = await requestUrl({
             url: url,
@@ -67,7 +72,6 @@ export class LLMProvider {
             throw new Error(`Google API Error: ${response.status}`);
         }
 
-        // 解析 Gemini 的奇怪返回结构
         if (response.json.candidates && response.json.candidates.length > 0) {
              return response.json.candidates[0].content.parts[0].text.trim();
         }
