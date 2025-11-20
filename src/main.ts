@@ -3,7 +3,7 @@ import { Plugin, Notice } from "obsidian";
 import { PluginData } from "./core/types";
 import { Orchestrator } from "./core/Orchestrator";
 import { LLMProvider } from "./core/LLMProvider";
-import { GeneratorAgent } from "./agents/GeneratorAgent"; // 引入 Agent 实现
+import { GeneratorAgent } from "./agents/GeneratorAgent"; 
 import { OAKSettingTab } from "./settings";
 import { InputModal } from "./InputModal"; 
 
@@ -18,7 +18,7 @@ const DEFAULT_DATA: PluginData = {
         openaiModel: "gpt-3.5-turbo",
         googleApiKey: "",
         googleModel: "gemini-1.5-flash",
-        maxRetries: 3, // 新增默认重试次数
+        maxRetries: 3,
         prompt_generator: "请详细解释概念: {concept}，包含定义、原理和应用。",
         output_dir: "KnowledgeGraph"
     }
@@ -38,11 +38,9 @@ export default class AgentKitPlugin extends Plugin {
 
         this.addSettingTab(new OAKSettingTab(this.app, this));
 
-        // --- 修改 ---: 传入一个返回最新 settings 的函数，解决配置热更新问题
         this.llm = new LLMProvider(() => this.data.settings);
         this.orchestrator = new Orchestrator(this);
 
-        // --- 修改 ---: 现在 'this' 的类型是匹配的，不再需要 'as any'
         this.orchestrator.registerAgent(new GeneratorAgent(this, this.llm));
 
         this.addCommand({
@@ -50,14 +48,19 @@ export default class AgentKitPlugin extends Plugin {
             name: '添加新概念到生成队列',
             callback: () => {
                 new InputModal(this.app, (concept) => {
-                    // --- 修改 ---: 使用 Agent 定义的常量作为队列名，避免硬编码
-                    this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept: concept });
-                    new Notice(`已将 '${concept}' 加入队列。`);
+                    // [修复]: 处理异步 Promise
+                    this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept: concept })
+                        .then(() => {
+                            new Notice(`已将 '${concept}' 加入队列。`);
+                        })
+                        .catch((err) => {
+                            console.error("Failed to add to queue:", err);
+                            new Notice("加入队列失败，请查看控制台。");
+                        });
                 }).open();
             }
         });
 
-        // --- 修改 ---: 实现真正的启动/停止切换逻辑
         this.addCommand({
             id: 'toggle-oak',
             name: '启动/停止 OAK 引擎',
@@ -72,18 +75,26 @@ export default class AgentKitPlugin extends Plugin {
         
         this.addRibbonIcon('bot', 'OAK: 添加新概念', () => {
             new InputModal(this.app, (concept) => {
-                this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept: concept });
-                // 只有在引擎未运行时才启动，避免重复提示
-                if (!this.orchestrator.isRunning) {
-                    this.orchestrator.start(); 
-                }
+                // [修复]: 处理异步 Promise
+                this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept: concept })
+                    .then(() => {
+                         if (!this.orchestrator.isRunning) {
+                            this.orchestrator.start(); 
+                        }
+                    })
+                    .catch(console.error);
             }).open();
         });
+        
+        console.log("OAK Agent Kit loaded.");
+    }
+
+    onunload() {
+        console.log("OAK Agent Kit unloaded.");
     }
 
     async loadData() {
         const loaded = await super.loadData();
-        // 使用 structuredClone 进行深层合并，避免嵌套对象被覆盖
         this.data = {
             ...DEFAULT_DATA,
             ...loaded,
@@ -100,9 +111,5 @@ export default class AgentKitPlugin extends Plugin {
 
     async saveData() {
         await super.saveData(this.data);
-        // --- 移除 ---: 不再需要在这里重新创建 LLMProvider 实例
-        // if (this.llm) {
-        //     this.llm = new LLMProvider(this.data.settings);
-        // }
     }
 }

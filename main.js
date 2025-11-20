@@ -32,7 +32,6 @@ var import_obsidian5 = require("obsidian");
 // src/core/Orchestrator.ts
 var import_obsidian = require("obsidian");
 var Orchestrator = class {
-  // --- 修改 ---: 构造函数类型安全化
   constructor(plugin) {
     this._isRunning = false;
     this.agents = [];
@@ -46,7 +45,7 @@ var Orchestrator = class {
     if (!this.plugin.data.queues[agent.queueName]) {
       this.plugin.data.queues[agent.queueName] = [];
     }
-    console.info(`[Orchestrator] 已注册 Agent: ${agent.constructor.name} -> 监控队列: ${agent.queueName}`);
+    console.log(`[Orchestrator] 已注册 Agent: ${agent.constructor.name} -> 监控队列: ${agent.queueName}`);
   }
   async addToQueue(queueName, item) {
     if (!this.plugin.data.queues[queueName]) {
@@ -61,7 +60,7 @@ var Orchestrator = class {
       return;
     this._isRunning = true;
     new import_obsidian.Notice("🚀 OAK 引擎已启动");
-    this.loop();
+    this.loop().catch((err) => console.error("[Orchestrator] Loop error:", err));
   }
   stop() {
     this._isRunning = false;
@@ -87,8 +86,7 @@ var Orchestrator = class {
             throw new Error("Agent process returned false.");
           }
         } catch (error) {
-          const err = error instanceof Error ? error : new Error(String(error));
-          console.error(`[Agent Error] ${agent.constructor.name} 处理任务失败:`, item, err);
+          console.error(`[Agent Error] ${agent.constructor.name} 处理任务失败:`, item, error);
           workDone = true;
           const failedItem = queue.shift();
           if (failedItem) {
@@ -108,7 +106,9 @@ var Orchestrator = class {
       }
     }
     const delay = workDone ? 100 : 2e3;
-    setTimeout(() => this.loop(), delay);
+    setTimeout(() => {
+      this.loop().catch((err) => console.error("[Orchestrator] Loop error in timeout:", err));
+    }, delay);
   }
 };
 
@@ -237,13 +237,14 @@ var OAKSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "OAK Agent Kit 设置" });
+    new import_obsidian3.Setting(containerEl).setName("General").setHeading();
     new import_obsidian3.Setting(containerEl).setName("AI 模型提供商").addDropdown((d) => d.addOption("openai", "OpenAI").addOption("google", "Google").setValue(this.plugin.data.settings.llmProvider).onChange(async (v) => {
       this.plugin.data.settings.llmProvider = v;
       await this.plugin.saveData();
       this.display();
     }));
     if (this.plugin.data.settings.llmProvider === "openai") {
+      new import_obsidian3.Setting(containerEl).setName("OpenAI settings").setHeading();
       new import_obsidian3.Setting(containerEl).setName("API Key").addText((t) => t.setValue(this.plugin.data.settings.openaiApiKey).onChange(async (v) => {
         this.plugin.data.settings.openaiApiKey = v;
         await this.plugin.saveData();
@@ -258,6 +259,7 @@ var OAKSettingTab = class extends import_obsidian3.PluginSettingTab {
       }));
     }
     if (this.plugin.data.settings.llmProvider === "google") {
+      new import_obsidian3.Setting(containerEl).setName("Google Gemini settings").setHeading();
       new import_obsidian3.Setting(containerEl).setName("API Key").addText((t) => t.setValue(this.plugin.data.settings.googleApiKey).onChange(async (v) => {
         this.plugin.data.settings.googleApiKey = v;
         await this.plugin.saveData();
@@ -267,6 +269,7 @@ var OAKSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveData();
       }));
     }
+    new import_obsidian3.Setting(containerEl).setName("Engine").setHeading();
     new import_obsidian3.Setting(containerEl).setName("输出文件夹").addText((t) => t.setValue(this.plugin.data.settings.output_dir).onChange(async (v) => {
       this.plugin.data.settings.output_dir = v;
       await this.plugin.saveData();
@@ -335,7 +338,6 @@ var DEFAULT_DATA = {
     googleApiKey: "",
     googleModel: "gemini-1.5-flash",
     maxRetries: 3,
-    // 新增默认重试次数
     prompt_generator: "请详细解释概念: {concept}，包含定义、原理和应用。",
     output_dir: "KnowledgeGraph"
   }
@@ -355,8 +357,12 @@ var AgentKitPlugin = class extends import_obsidian5.Plugin {
       name: "添加新概念到生成队列",
       callback: () => {
         new InputModal(this.app, (concept) => {
-          this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept });
-          new import_obsidian5.Notice(`已将 '${concept}' 加入队列。`);
+          this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept }).then(() => {
+            new import_obsidian5.Notice(`已将 '${concept}' 加入队列。`);
+          }).catch((err) => {
+            console.error("Failed to add to queue:", err);
+            new import_obsidian5.Notice("加入队列失败，请查看控制台。");
+          });
         }).open();
       }
     });
@@ -373,12 +379,17 @@ var AgentKitPlugin = class extends import_obsidian5.Plugin {
     });
     this.addRibbonIcon("bot", "OAK: 添加新概念", () => {
       new InputModal(this.app, (concept) => {
-        this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept });
-        if (!this.orchestrator.isRunning) {
-          this.orchestrator.start();
-        }
+        this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept }).then(() => {
+          if (!this.orchestrator.isRunning) {
+            this.orchestrator.start();
+          }
+        }).catch(console.error);
       }).open();
     });
+    console.log("OAK Agent Kit loaded.");
+  }
+  onunload() {
+    console.log("OAK Agent Kit unloaded.");
   }
   async loadData() {
     const loaded = await super.loadData();

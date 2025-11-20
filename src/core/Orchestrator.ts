@@ -1,32 +1,27 @@
 // src/core/Orchestrator.ts
-import { Notice } from "obsidian";
-import { BaseAgent, IAgentPluginContext } from "./BaseAgent"; // --- 修改 ---: 引入接口
-import { TaskItem } from "./types";
+import { Notice, Plugin } from "obsidian";
+import { BaseAgent } from "./BaseAgent";
+import { PluginData, TaskItem } from "./types";
 
 export class Orchestrator {
     private _isRunning = false;
     private agents: BaseAgent<any>[] = [];
-    
-    // --- 修改 ---: 使用接口类型，获得完整的代码提示
-    private plugin: IAgentPluginContext;
+    private plugin: Plugin & { data: PluginData, saveData: () => Promise<void> };
 
     public get isRunning(): boolean {
         return this._isRunning;
     }
 
-    // --- 修改 ---: 构造函数类型安全化
-    constructor(plugin: IAgentPluginContext) {
+    constructor(plugin: any) {
         this.plugin = plugin;
     }
 
     registerAgent(agent: BaseAgent<any>) {
         this.agents.push(agent);
-        // 使用接口后，这里的 data 和 queues 都会有自动补全
         if (!this.plugin.data.queues[agent.queueName]) {
             this.plugin.data.queues[agent.queueName] = [];
         }
-        // --- 修改 ---: 使用 info 级别记录生命周期事件
-        console.info(`[Orchestrator] 已注册 Agent: ${agent.constructor.name} -> 监控队列: ${agent.queueName}`);
+        console.log(`[Orchestrator] 已注册 Agent: ${agent.constructor.name} -> 监控队列: ${agent.queueName}`);
     }
 
     async addToQueue(queueName: string, item: TaskItem) {
@@ -42,7 +37,8 @@ export class Orchestrator {
         if (this._isRunning) return;
         this._isRunning = true;
         new Notice("🚀 OAK 引擎已启动");
-        this.loop();
+        // [修复]: 处理悬空 Promise，显式捕获异常
+        this.loop().catch(err => console.error("[Orchestrator] Loop error:", err));
     }
 
     stop() {
@@ -68,17 +64,16 @@ export class Orchestrator {
                     const success = await agent.process(item);
                     
                     if (success) {
-                        queue.shift(); 
+                        queue.shift();
                         workDone = true;
                     } else {
                         throw new Error("Agent process returned false.");
                     }
-                } catch (error: unknown) { // --- 修改 ---: 标准化错误捕获
-                    const err = error instanceof Error ? error : new Error(String(error));
-                    console.error(`[Agent Error] ${agent.constructor.name} 处理任务失败:`, item, err);
-                    workDone = true; 
+                } catch (error) {
+                    console.error(`[Agent Error] ${agent.constructor.name} 处理任务失败:`, item, error);
+                    workDone = true;
                     
-                    const failedItem = queue.shift(); 
+                    const failedItem = queue.shift();
                     if (failedItem) {
                         failedItem.retries = (failedItem.retries || 0) + 1;
                         
@@ -98,6 +93,9 @@ export class Orchestrator {
         }
 
         const delay = workDone ? 100 : 2000; 
-        setTimeout(() => this.loop(), delay);
+        // [修复]: 处理 setTimeout 中的悬空 Promise
+        setTimeout(() => {
+            this.loop().catch(err => console.error("[Orchestrator] Loop error in timeout:", err));
+        }, delay);
     }
 }
