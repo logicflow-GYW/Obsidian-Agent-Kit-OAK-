@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-智能 Git 仓库管理器 V6 (Smart Connect Edition)
+智能 Git 仓库管理器 V7 (Stealth Edition)
 
-新增功能:
-- 解决网页版更新后本地无法同步的问题
-- 在初始化时增加 "关联现有远程仓库" 选项
-- 自动合并远程历史与本地文件 (Allow unrelated histories)
+核心修复:
+- 彻底解决 "脚本把自己推送到仓库" 的问题。
+- 运行脚本时，会自动检测并从 Git 索引中移除脚本自身 (git rm --cached)。
+- 效果: 脚本保留在本地，但在 GitHub 仓库中消失。
 """
 
 import subprocess
@@ -38,7 +38,10 @@ class Colors:
 
 def run_command(command, repo_path, check=True, silent=False):
     if not silent:
-        print(f"{Colors.CYAN}▶️  Exec: {' '.join(command)}{Colors.ENDC}")
+        # 只有非 git status 命令才打印，减少刷屏
+        if 'status' not in command:
+            print(f"{Colors.CYAN}▶️  Exec: {' '.join(command)}{Colors.ENDC}")
+    
     try:
         process = subprocess.Popen(
             command,
@@ -49,23 +52,34 @@ def run_command(command, repo_path, check=True, silent=False):
             bufsize=1,
             encoding='utf-8'
         )
+        
         output_lines = []
         for line in process.stdout:
             if not silent: print(line, end='', flush=True)
             output_lines.append(line)
+            
         process.wait()
+        
         if check and process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, command, output=''.join(output_lines))
+            
         return process.returncode, "".join(output_lines)
+        
     except Exception as e:
         if not silent: Colors.print(f"\n❌ 执行失败: {e}", Colors.FAIL)
         if check: sys.exit(1)
         return -1, str(e)
 
-def update_gitignore(repo_path, script_name):
+def ensure_self_is_hidden(repo_path, script_name):
+    """ 
+    核心修复逻辑:
+    1. 确保在 .gitignore 中
+    2. 确保从 Git 索引中移除 (Untrack)
+    """
     gitignore_path = os.path.join(repo_path, '.gitignore')
     ignores = [script_name, ".DS_Store", "Thumbs.db", "__pycache__/", "*.log", ".venv", "venv/"]
     
+    # 1. 更新 .gitignore
     current_content = ""
     if os.path.exists(gitignore_path):
         with open(gitignore_path, 'r', encoding='utf-8') as f:
@@ -80,17 +94,29 @@ def update_gitignore(repo_path, script_name):
             Colors.print(f"🔧 .gitignore 已更新。", Colors.WARNING)
         except: pass
 
-# --- 场景一：同步现有仓库 (常规逻辑) ---
+    # 2. 强制从 Git 索引移除 (如果之前误传过)
+    # 检查文件是否被 Git 跟踪
+    code, output = run_command(['git', 'ls-files', script_name], repo_path, silent=True)
+    if output.strip() == script_name:
+        Colors.print(f"🕵️  检测到脚本被 Git 跟踪，正在强制移除...", Colors.WARNING)
+        # git rm --cached 只删索引，不删本地文件
+        run_command(['git', 'rm', '--cached', script_name], repo_path, silent=True)
+        Colors.print(f"✅ 脚本已进入隐身模式 (将从下次提交中消失)", Colors.GREEN)
+
+# --- 场景一：同步现有仓库 ---
 
 def sync_existing_repo(repo_path, script_name, custom_msg=None):
     Colors.print(f"✅ 检测到 Git 仓库，准备同步...", Colors.GREEN, bold=True)
-    update_gitignore(repo_path, script_name)
+    
+    # 先执行隐身操作！
+    ensure_self_is_hidden(repo_path, script_name)
     
     # 1. Add & Commit
     code, output = run_command(['git', 'status', '--porcelain'], repo_path, silent=True)
     if output.strip():
         Colors.print("\n=== 1. 提交本地变更 ===", Colors.HEADER)
         run_command(['git', 'add', '.'], repo_path)
+        
         msg = custom_msg if custom_msg else f"Sync: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         run_command(['git', 'commit', '-m', msg], repo_path)
     else:
@@ -115,73 +141,53 @@ def sync_existing_repo(repo_path, script_name, custom_msg=None):
     
     Colors.print(f"\n=== 🎉 同步完成！ ===", Colors.GREEN, bold=True)
 
-# --- 场景二：初始化/关联仓库 (核心修改) ---
+# --- 场景二：初始化/关联仓库 ---
 
 def init_setup(repo_path, script_name):
     Colors.print(f"🤔 未检测到 Git 仓库配置", Colors.BLUE, bold=True)
     
     print("\n请选择操作模式:")
-    print("1. ✨ 创建全新的 GitHub 仓库 (并将当前文件推送上去)")
-    print("2. 🔗 关联已存在的 GitHub 仓库 (下载远端代码并与本地合并)")
+    print("1. ✨ 创建全新的 GitHub 仓库")
+    print("2. 🔗 关联已存在的 GitHub 仓库")
     
     choice = input("\n请输入序号 (1/2): ").strip()
-    
-    if not shutil.which('git'): 
-        Colors.print("❌ 未找到 git 命令", Colors.FAIL); sys.exit(1)
+    if not shutil.which('git'): Colors.print("❌ 未找到 git", Colors.FAIL); sys.exit(1)
 
-    # --- 模式 1: 全新创建 (旧逻辑) ---
-    if choice == '1':
-        if not shutil.which('gh'):
-            Colors.print("❌ 模式1需要安装 'gh' (GitHub CLI)", Colors.FAIL); sys.exit(1)
-            
-        repo_name = input(f"请输入新仓库名称 [{os.path.basename(repo_path)}]: ") or os.path.basename(repo_path)
+    if choice == '1': # 新建
+        repo_name = input(f"新仓库名称 [{os.path.basename(repo_path)}]: ") or os.path.basename(repo_path)
         visibility = 'private' if input("可见性 (public/private) [public]: ").lower().startswith('pr') else 'public'
         
         run_command(['git', 'init', '-b', 'main'], repo_path)
-        update_gitignore(repo_path, script_name)
+        ensure_self_is_hidden(repo_path, script_name) # 隐身
         run_command(['git', 'add', '.'], repo_path)
         run_command(['git', 'commit', '-m', 'Initial commit'], repo_path)
         
         gh_cmd = ['gh', 'repo', 'create', repo_name, f'--{visibility}', '--source=.', '--push']
         run_command(gh_cmd, repo_path)
-        Colors.print("\n=== 🎉 创建并推送成功！ ===", Colors.GREEN, bold=True)
 
-    # --- 模式 2: 关联已有 (新逻辑) ---
-    elif choice == '2':
-        remote_url = input("请输入远程仓库地址 (例如 https://github.com/user/repo.git): ").strip()
-        if not remote_url:
-            Colors.print("❌ 地址不能为空", Colors.FAIL); sys.exit(1)
+    elif choice == '2': # 关联
+        remote_url = input("远程仓库地址: ").strip()
+        if not remote_url: sys.exit(1)
 
-        Colors.print("\n=== 正在初始化并连接... ===", Colors.HEADER)
+        Colors.print("\n=== 初始化连接 ===", Colors.HEADER)
         run_command(['git', 'init', '-b', 'main'], repo_path)
-        update_gitignore(repo_path, script_name)
+        ensure_self_is_hidden(repo_path, script_name) # 隐身
         
-        # 添加远程地址
         run_command(['git', 'remote', 'add', 'origin', remote_url], repo_path)
         
-        # 先 Commit 本地可能存在的文件，防止 Pull 报错
+        # 先提交本地现有文件（除了脚本自己）
         code, output = run_command(['git', 'status', '--porcelain'], repo_path, silent=True)
         if output.strip():
              run_command(['git', 'add', '.'], repo_path)
              run_command(['git', 'commit', '-m', 'Local init backup'], repo_path)
 
-        Colors.print("\n=== 正在拉取远程代码并合并... ===", Colors.HEADER)
-        # 关键点: --allow-unrelated-histories 允许把远端历史和本地历史强制合体
-        pull_code, _ = run_command(['git', 'pull', 'origin', 'main', '--allow-unrelated-histories'], repo_path, check=False)
+        Colors.print("\n=== 合并远程代码 ===", Colors.HEADER)
+        run_command(['git', 'pull', 'origin', 'main', '--allow-unrelated-histories'], repo_path, check=False)
         
-        if pull_code != 0:
-            Colors.print("\n⚠️  拉取出现冲突，请手动打开文件解决冲突。", Colors.WARNING)
-            Colors.print("解决后，请运行: git add . && git commit -m 'Merge fix' && git push", Colors.WARNING)
-        else:
-            Colors.print("\n=== 正在同步回远端... ===", Colors.HEADER)
-            run_command(['git', 'push', '--set-upstream', 'origin', 'main'], repo_path)
-            Colors.print(f"\n=== 🎉 关联成功！现在可以正常使用脚本同步了 ===", Colors.GREEN, bold=True)
+        Colors.print("\n=== 同步回远端 ===", Colors.HEADER)
+        run_command(['git', 'push', '--set-upstream', 'origin', 'main'], repo_path)
+        Colors.print(f"\n=== 🎉 关联成功！ ===", Colors.GREEN, bold=True)
 
-    else:
-        print("❌ 无效选择")
-        sys.exit(1)
-
-# --- 主程序 ---
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('message', nargs='?', help='Commit message')
@@ -192,7 +198,7 @@ def main():
     REPO_PATH = os.path.dirname(script_path)
     SCRIPT_NAME = os.path.basename(script_path)
 
-    Colors.print(f"=== 智能 Git 管理器 V6 (Smart Connect) ===", Colors.CYAN, bold=True)
+    Colors.print(f"=== 智能 Git 管理器 V7 (Stealth) ===", Colors.CYAN, bold=True)
     
     if os.path.isdir(os.path.join(REPO_PATH, '.git')):
         sync_existing_repo(REPO_PATH, SCRIPT_NAME, args.message)
