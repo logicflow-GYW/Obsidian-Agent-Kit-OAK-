@@ -1,6 +1,7 @@
 // src/settings.ts
 import { App, PluginSettingTab, Setting } from "obsidian";
 import AgentKitPlugin from "./main";
+import { Logger } from "./core/utils"; // 引入 Logger 以便实时切换调试状态
 
 export class OAKSettingTab extends PluginSettingTab {
     plugin: AgentKitPlugin;
@@ -12,99 +13,125 @@ export class OAKSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
         
-        // [修复]: 移除包含插件名称的 h2 标题，改用通用标题
-        // 违规代码: containerEl.createEl("h2", { text: "OAK Agent Kit 设置" });
         new Setting(containerEl)
             .setName("General")
             .setHeading();
 
+        // 1. Debug Mode (新增)
         new Setting(containerEl)
-            .setName("AI 模型提供商")
+            .setName("Debug mode")
+            .setDesc("Enable verbose logging in console for troubleshooting.")
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.debug_mode)
+                .onChange(async (value) => {
+                    this.plugin.settings.debug_mode = value;
+                    Logger.setDebugMode(value); // 实时生效
+                    await this.plugin.saveSettings();
+                }));
+
+        // 2. AI Provider
+        new Setting(containerEl)
+            .setName("AI Model Provider")
             .addDropdown(d => d
                 .addOption("openai", "OpenAI")
                 .addOption("google", "Google")
-                .setValue(this.plugin.data.settings.llmProvider)
+                .setValue(this.plugin.settings.llmProvider)
                 .onChange(async v => { 
-                    this.plugin.data.settings.llmProvider = v; 
-                    await this.plugin.saveData(); 
-                    this.display(); 
+                    this.plugin.settings.llmProvider = v; 
+                    await this.plugin.saveSettings(); 
+                    this.display(); // 刷新面板以显示对应设置
                 }));
 
-        if (this.plugin.data.settings.llmProvider === "openai") {
-            // [修复]: 移除 "settings" 字样
+        // 3. OpenAI 设置区
+        if (this.plugin.settings.llmProvider === "openai") {
             new Setting(containerEl).setName("OpenAI").setHeading();
             
             new Setting(containerEl)
                 .setName("API Key")
                 .addText(t => t
-                    .setValue(this.plugin.data.settings.openaiApiKey)
+                    .setValue(this.plugin.settings.openaiApiKey)
                     .onChange(async v => { 
-                        this.plugin.data.settings.openaiApiKey = v; 
-                        await this.plugin.saveData(); 
+                        this.plugin.settings.openaiApiKey = v; 
+                        await this.plugin.saveSettings(); 
                     }));
             
             new Setting(containerEl)
                 .setName("Base URL")
                 .addText(t => t
-                    .setValue(this.plugin.data.settings.openaiBaseUrl)
+                    .setValue(this.plugin.settings.openaiBaseUrl)
                     .onChange(async v => { 
-                        this.plugin.data.settings.openaiBaseUrl = v; 
-                        await this.plugin.saveData(); 
+                        this.plugin.settings.openaiBaseUrl = v; 
+                        await this.plugin.saveSettings(); 
                     }));
             
             new Setting(containerEl)
-                .setName("模型名称")
+                .setName("Model Name")
                 .addText(t => t
-                    .setValue(this.plugin.data.settings.openaiModel)
+                    .setValue(this.plugin.settings.openaiModel)
                     .onChange(async v => { 
-                        this.plugin.data.settings.openaiModel = v; 
-                        await this.plugin.saveData(); 
+                        this.plugin.settings.openaiModel = v; 
+                        await this.plugin.saveSettings(); 
                     }));
         }
 
-        if (this.plugin.data.settings.llmProvider === "google") {
-            // [修复]: 移除 "settings" 字样
+        // 4. Google 设置区
+        if (this.plugin.settings.llmProvider === "google") {
             new Setting(containerEl).setName("Google Gemini").setHeading();
 
             new Setting(containerEl)
                 .setName("API Key")
                 .addText(t => t
-                    .setValue(this.plugin.data.settings.googleApiKey)
+                    .setValue(this.plugin.settings.googleApiKey)
                     .onChange(async v => { 
-                        this.plugin.data.settings.googleApiKey = v; 
-                        await this.plugin.saveData(); 
+                        this.plugin.settings.googleApiKey = v; 
+                        await this.plugin.saveSettings(); 
                     }));
             
             new Setting(containerEl)
-                .setName("模型名称")
+                .setName("Model Name")
                 .addText(t => t
-                    .setValue(this.plugin.data.settings.googleModel)
+                    .setValue(this.plugin.settings.googleModel)
                     .onChange(async v => { 
-                        this.plugin.data.settings.googleModel = v; 
-                        await this.plugin.saveData(); 
+                        this.plugin.settings.googleModel = v; 
+                        await this.plugin.saveSettings(); 
                     }));
         }
 
+        // 5. 引擎设置区
         new Setting(containerEl).setName("Engine").setHeading();
 
         new Setting(containerEl)
-            .setName("输出文件夹")
+            .setName("Output Folder")
             .addText(t => t
-                .setValue(this.plugin.data.settings.output_dir)
+                .setValue(this.plugin.settings.output_dir)
                 .onChange(async v => { 
-                    this.plugin.data.settings.output_dir = v; 
-                    await this.plugin.saveData(); 
+                    this.plugin.settings.output_dir = v; 
+                    await this.plugin.saveSettings(); 
                 }));
         
         new Setting(containerEl)
-            .setName("生成 Prompt 模板")
+            .setName("Max Retries")
+            .setDesc("How many times to retry a failed task.")
+            .addText(t => t
+                .setValue(String(this.plugin.settings.maxRetries))
+                .onChange(async v => { 
+                    const num = parseInt(v);
+                    if (!isNaN(num)) {
+                        this.plugin.settings.maxRetries = num; 
+                        await this.plugin.saveSettings(); 
+                    }
+                }));
+
+        new Setting(containerEl)
+            .setName("Generator Prompt Template")
             .addTextArea(t => { 
-                t.setValue(this.plugin.data.settings.prompt_generator)
+                t.setValue(this.plugin.settings.prompt_generator)
                  .onChange(async v => { 
-                     this.plugin.data.settings.prompt_generator = v; 
-                     await this.plugin.saveData(); 
+                     this.plugin.settings.prompt_generator = v; 
+                     await this.plugin.saveSettings(); 
                  }); 
                 t.inputEl.rows = 5; 
+                t.inputEl.style.width = "100%";
             });
     }
 }
