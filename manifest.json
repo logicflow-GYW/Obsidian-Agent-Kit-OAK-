@@ -1,10 +1,10 @@
 {
-    "id": "Obsidian-Agent-Kit(OAK)",
-    "name": "Obsidian-Agent-Kit(OAK)",
-    "version": "1.0.0",
+    "id": "Obsidian-Agent-Kit",
+    "name": "OAK Agent Kit",
+    "version": "1.1.0",
     "minAppVersion": "0.15.0",
-    "description": "Obsidian-Agent-Kit(OAK)",
+    "description": "A robust, event-driven AI agent framework for Obsidian. Features persistence layer, task queues, and multi-provider LLM support.",
     "author": "logicflow-GYW",
-    "authorUrl": "",
+    "authorUrl": "https://github.com/logicflow-GYW",
     "isDesktopOnly": false
 }

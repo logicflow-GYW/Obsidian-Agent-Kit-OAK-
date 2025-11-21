@@ -1,113 +1,111 @@
-# Obsidian-Agent-Kit (OAK)
+
+# Obsidian Agent Kit (OAK)
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-一个为 Obsidian 设计的、极简而强大的 AI 代理（Agent）开发工具包。OAK 提供了一套核心架构，让你能快速构建在后台运行、处理异步任务的 AI 功能插件。
+**OAK (Obsidian Agent Kit)** 是一个为 Obsidian 打造的**企业级 AI 代理开发框架**。
 
-## 核心理念
+它不仅仅是一个插件，更是一套标准的**生产管线**。它解决了 Obsidian AI 插件开发中最头疼的几个问题：**任务阻塞主线程**、**大数据量导致配置文件膨胀**、以及**缺乏统一的调度机制**。
 
-OAK 的设计灵感来源于“代理”模式。你可以创建多个独立的 Agent，每个 Agent 负责一种特定的任务（例如：内容生成、文章摘要、任务整理等）。这些 Agent 由一个中央**调度器（Orchestrator）**管理，通过任务队列实现异步、非阻塞的后台工作。
+---
 
--   **调度器 (Orchestrator)**: 插件的“心脏”，在后台循环运行，检查各个任务队列并分派任务给对应的 Agent。
--   **代理 (Agent)**: 具体的“工人”，继承自 `BaseAgent`。每个 Agent 监听一个专属的队列，并定义如何处理队列中的任务。
--   **队列 (Queue)**: 任务的“传送带”。任何地方都可以向指定队列添加任务，调度器会自动拾取。
--   **LLMProvider**: 统一的语言模型接口，轻松切换和使用不同的 AI 服务（当前已支持 OpenAI 兼容接口和 Google Gemini）。
+## 🌟 核心特性 (Core Features)
 
-## ✨ 功能特性
+* **🧠 稳健的调度核心 (Orchestrator)**: 基于事件循环的后台任务调度器，支持多 Agent 并行协作。
+* **💾 专业级持久化 (Persistence Layer)**: 
+    * **配置与数据分离**: 彻底告别 `data.json` 膨胀问题。任务队列独立存储，大文本内容自动缓存为文件。
+    * **崩溃恢复**: 即使 Obsidian 意外关闭，未完成的任务也不会丢失，重启后自动断点续传。
+* **🛡️ 容错与重试**: 内置指数退避重试机制，API 抖动不再导致任务失败。
+* **📝 标准化日志 (Logger)**: 提供统一的调试模式与生产环境日志管理，符合插件审核规范。
+* **🔌 多模型支持**: 开箱即用的 OpenAI (兼容 DeepSeek/Moonshot) 与 Google Gemini 支持。
 
--   **后台任务处理**: 所有 AI 任务都在后台异步执行，不阻塞你的写作流程。
--   **模块化 Agent 设计**: 方便扩展，每个功能都是一个独立的 Agent，逻辑清晰。
--   **任务队列系统**: 可靠地处理任务，即使一次性添加大量任务也不会卡顿。
--   **多 LLM 支持**: 已内置 OpenAI (及兼容 API, 如 DeepSeek, Moonshot) 和 Google Gemini 的支持。
--   **灵活的 UI 交互**: 提供了命令面板、状态栏图标和自定义弹窗等多种方式与用户交互。
--   **清晰的配置管理**: 所有设置项都在一个独立的设置面板中，方便用户配置。
+---
 
-## 🚀 快速开始
+## 🚀 快速开始 (用户视角)
 
-1.  **安装**:
-    *   将项目克隆或下载到你的 Obsidian 插件目录 (`.obsidian/plugins/`)。
-    *   在插件目录中运行 `npm install` 安装依赖。
-    *   运行 `npm run build` 来编译 TypeScript 代码。
-    *   在 Obsidian 中启用 "OAK Agent Kit" 插件。
+1.  **安装**: 下载插件并启用。
+2.  **配置**: 在设置中填入 API Key，并开启 **Debug Mode** 以查看详细运行日志。
+3.  **使用**: 
+    * 点击侧边栏机器人图标，输入概念（如“熵增定律”），点击“添加到队列”。
+    * OAK 会在后台默默工作，生成完毕后自动将笔记保存到指定目录。
 
-2.  **配置**:
-    *   进入 Obsidian 的设置 -> "OAK Agent Kit"。
-    *   选择你想要使用的 AI 提供商（OpenAI 或 Google）。
-    *   填入你的 API Key 和其他相关信息（如 Base URL、模型名称）。
-    *   你可以自定义输出目录和 Prompt 模板。
+---
 
-3.  **使用 (示例：概念生成器)**:
-    *   点击 Obsidian 左侧边栏的机器人 (`bot`) 图标。
-    *   在弹出的窗口中输入一个概念，例如“第一性原理”。
-    *   点击“添加到队列”。
-    *   OAK 引擎会自动启动，在后台调用 AI 生成关于该概念的笔记，并保存到你设置的输出文件夹中。
-    *   你也可以通过命令面板 (`Ctrl/Cmd + P`) 运行 "添加新概念到生成队列" 来触发此功能。
+## 🧑‍💻 开发者指南：构建你的第一个 Agent
 
-## 🧑‍💻 对于开发者：如何创建新的 Agent
+OAK 的设计哲学是：**"你只管写业务逻辑，剩下的交给框架"**。
 
-OAK 的魅力在于它的可扩展性。创建一个新的 Agent 非常简单：
+### 第一步：定义任务与 Agent
 
-1.  **创建 Agent 文件**:
-    在 `src/agents/` 目录下创建一个新文件，例如 `SummarizerAgent.ts`。
+创建一个继承自 `BaseAgent` 的类。你无需关心队列怎么存、API 怎么调，只需实现 `process` 方法。
 
-2.  **编写 Agent 代码**:
-    继承 `BaseAgent` 并实现 `queueName` 和 `process` 方法。
+```typescript
+// src/agents/SummarizerAgent.ts
+import { BaseAgent } from "../core/BaseAgent";
+import { Notice } from "obsidian";
 
-    ```typescript
-    // src/agents/SummarizerAgent.ts
-    import { BaseAgent } from "../core/BaseAgent";
-    import { App, Notice } } from "obsidian";
+// 1. 定义任务数据结构
+export interface SummarizeTask {
+    filePath: string;
+    fileContent: string;
+}
 
-    // 定义任务项的类型
-    interface SummarizeTask {
-        filePath: string;
-        content: string;
+export class SummarizerAgent extends BaseAgent<SummarizeTask> {
+    // 2. 定义队列名称 (全局唯一)
+    get queueName(): string {
+        return "summarize_queue";
     }
 
-    export class SummarizerAgent extends BaseAgent<SummarizeTask> {
-        // 1. 定义此 Agent 监听的队列名称
-        get queueName(): string {
-            return "summarize_queue";
+    // 3. 实现业务逻辑
+    async process(task: SummarizeTask): Promise<boolean> {
+        this.log(`正在处理文件: ${task.filePath}`); // 使用内置日志工具
+
+        const prompt = `请总结以下内容:\n\n${task.fileContent}`;
+        const summary = await this.llm.chat(prompt);
+
+        if (!summary) return false; // 返回 false 会触发框架的自动重试机制
+
+        // 写入结果
+        const targetFile = this.app.vault.getAbstractFileByPath(task.filePath);
+        if (targetFile) {
+            await this.app.vault.append(targetFile, `\n\n## AI 摘要\n${summary}`);
+            new Notice(`摘要已生成: ${task.filePath}`);
         }
-
-        // 2. 实现处理逻辑
-        async process(task: SummarizeTask): Promise<boolean> {
-            new Notice(`正在为 ${task.filePath} 生成摘要...`);
-
-            const prompt = `请为以下内容生成一段简洁的摘要：\n\n${task.content}`;
-            const summary = await this.llm.chat(prompt);
-
-            if (!summary) {
-                new Notice("摘要生成失败！");
-                return false; // 返回 false 表示任务失败，不会从队列中移除
-            }
-            
-            // 将摘要追加到原文件末尾
-            await this.app.vault.append(
-                this.app.vault.getAbstractFileByPath(task.filePath),
-                `\n\n---\n**AI 摘要:**\n${summary}`
-            );
-            
-            new Notice(`文件 ${task.filePath} 的摘要已生成！`);
-            return true; // 返回 true 表示任务成功
-        }
+        
+        return true; // 任务成功，移出队列
     }
-    ```
+}
+````
 
-3.  **注册 Agent**:
-    在 `main.ts` 的 `onload` 方法中，实例化并注册你的新 Agent。
+### 第二步：注册 Agent
 
-    ```typescript
-    // main.ts
-    import { SummarizerAgent } from "./agents/SummarizerAgent"; // 导入新 Agent
+在 `main.ts` 中注册你的 Agent，OAK 调度器会自动接管它。
 
-    // ... in onload() method
-    this.orchestrator.registerAgent(new GeneratorAgent(this as any, this.llm));
-    this.orchestrator.registerAgent(new SummarizerAgent(this as any, this.llm)); // 注册你的新 Agent
-    ```
+```typescript
+// src/main.ts
+import { SummarizerAgent } from "./agents/SummarizerAgent";
 
-现在，你就可以在插件的任何地方调用 `this.orchestrator.addToQueue("summarize_queue", { filePath: '...', content: '...' })` 来使用你的新功能了！
+// ... 在 onload() 中
+this.orchestrator.registerAgent(new GeneratorAgent(this, this.llm));
+// 注册新 Agent
+this.orchestrator.registerAgent(new SummarizerAgent(this, this.llm)); 
+```
+
+### 第三步：派发任务
+
+在任何地方（Ribbon、Command、甚至另一个 Agent 中）派发任务。
+
+```typescript
+// 将任务丢进队列，立刻返回，不会卡顿界面
+this.orchestrator.addToQueue("summarize_queue", { 
+    filePath: "Notes/Meeting.md",
+    fileContent: "..." 
+});
+```
+
+-----
 
 ## 📄 许可证
 
-本项目采用 [MIT](LICENSE) 许可证。
+[MIT](https://www.google.com/search?q=LICENSE)
+
