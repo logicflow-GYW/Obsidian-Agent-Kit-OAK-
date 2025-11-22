@@ -1,6 +1,4 @@
 
-
-````markdown
 # 🌳 OAK (Obsidian Agent Kit)
 
 ![Version](https://img.shields.io/badge/version-1.1.0-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Obsidian-Framework-purple)
@@ -154,8 +152,3 @@ oak.on('oak:task-completed', (data) => {
 ## 📄 许可证
 
 [MIT License](https://www.google.com/search?q=LICENSE) © 2025 logicflow-GYW
-
-Designed with ❤️ for the [Obsidian](https://obsidian.md) Community.
-
-```
-```
