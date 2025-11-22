@@ -1,111 +1,161 @@
 
-# Obsidian Agent Kit (OAK)
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+````markdown
+# ”9´9 OAK (Obsidian Agent Kit)
 
-**OAK (Obsidian Agent Kit)** æ˜¯ä¸€ä¸ªä¸º Obsidian æ‰“é€ çš„**ä¼ä¸šçº§ AI ä»£ç†å¼€å‘æ¡†æž¶**ã€‚
+![Version](https://img.shields.io/badge/version-1.1.0-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Obsidian-Framework-purple)
 
-å®ƒä¸ä»…ä»…æ˜¯ä¸€ä¸ªæ’ä»¶ï¼Œæ›´æ˜¯ä¸€å¥—æ ‡å‡†çš„**ç”Ÿäº§ç®¡çº¿**ã€‚å®ƒè§£å†³äº† Obsidian AI æ’ä»¶å¼€å‘ä¸­æœ€å¤´ç–¼çš„å‡ ä¸ªé—®é¢˜ï¼š**ä»»åŠ¡é˜»å¡žä¸»çº¿ç¨‹**ã€**å¤§æ•°æ®é‡å¯¼è‡´é…ç½®æ–‡ä»¶è†¨èƒ€**ã€ä»¥åŠ**ç¼ºä¹ç»Ÿä¸€çš„è°ƒåº¦æœºåˆ¶**ã€‚
+> **Îª Obsidian ´òÔìµÄ AI »ù´¡ÉèÊ©Óë¶àÖÇÄÜÌåÐ­×÷ÏµÍ³**
 
----
-
-## ðŸŒŸ æ ¸å¿ƒç‰¹æ€§ (Core Features)
-
-* **ðŸ§  ç¨³å¥çš„è°ƒåº¦æ ¸å¿ƒ (Orchestrator)**: åŸºäºŽäº‹ä»¶å¾ªçŽ¯çš„åŽå°ä»»åŠ¡è°ƒåº¦å™¨ï¼Œæ”¯æŒå¤š Agent å¹¶è¡Œåä½œã€‚
-* **ðŸ’¾ ä¸“ä¸šçº§æŒä¹…åŒ– (Persistence Layer)**: 
-    * **é…ç½®ä¸Žæ•°æ®åˆ†ç¦»**: å½»åº•å‘Šåˆ« `data.json` è†¨èƒ€é—®é¢˜ã€‚ä»»åŠ¡é˜Ÿåˆ—ç‹¬ç«‹å­˜å‚¨ï¼Œå¤§æ–‡æœ¬å†…å®¹è‡ªåŠ¨ç¼“å­˜ä¸ºæ–‡ä»¶ã€‚
-    * **å´©æºƒæ¢å¤**: å³ä½¿ Obsidian æ„å¤–å…³é—­ï¼Œæœªå®Œæˆçš„ä»»åŠ¡ä¹Ÿä¸ä¼šä¸¢å¤±ï¼Œé‡å¯åŽè‡ªåŠ¨æ–­ç‚¹ç»­ä¼ ã€‚
-* **ðŸ›¡ï¸ å®¹é”™ä¸Žé‡è¯•**: å†…ç½®æŒ‡æ•°é€€é¿é‡è¯•æœºåˆ¶ï¼ŒAPI æŠ–åŠ¨ä¸å†å¯¼è‡´ä»»åŠ¡å¤±è´¥ã€‚
-* **ðŸ“ æ ‡å‡†åŒ–æ—¥å¿— (Logger)**: æä¾›ç»Ÿä¸€çš„è°ƒè¯•æ¨¡å¼ä¸Žç”Ÿäº§çŽ¯å¢ƒæ—¥å¿—ç®¡ç†ï¼Œç¬¦åˆæ’ä»¶å®¡æ ¸è§„èŒƒã€‚
-* **ðŸ”Œ å¤šæ¨¡åž‹æ”¯æŒ**: å¼€ç®±å³ç”¨çš„ OpenAI (å…¼å®¹ DeepSeek/Moonshot) ä¸Ž Google Gemini æ”¯æŒã€‚
+**OAK (Obsidian Agent Kit)** ²»½ö½öÊÇÒ»¸ö²å¼þ£¬ËüÊÇ Obsidian ÉúÌ¬ÖÐµÄ **AI ²Ù×÷ÏµÍ³ÄÚºË**¡£
+ËüÖ¼ÔÚ½â¾ö AI ²å¼þ¿ª·¢ÖÐµÄ¡°×îºóÎå¹«Àï¡±ÄÑÌâ£º**¸´ÔÓÈÎÎñµ÷¶È**¡¢**²¢·¢¿ØÖÆ**¡¢**¶ÏµãÐø´«**ÒÔ¼°**¿ç²å¼þÐ­×÷**¡£
 
 ---
 
-## ðŸš€ å¿«é€Ÿå¼€å§‹ (ç”¨æˆ·è§†è§’)
+## ”9²9 ÎªÊ²Ã´Ñ¡Ôñ OAK£¿(Why OAK?)
 
-1.  **å®‰è£…**: ä¸‹è½½æ’ä»¶å¹¶å¯ç”¨ã€‚
-2.  **é…ç½®**: åœ¨è®¾ç½®ä¸­å¡«å…¥ API Keyï¼Œå¹¶å¼€å¯ **Debug Mode** ä»¥æŸ¥çœ‹è¯¦ç»†è¿è¡Œæ—¥å¿—ã€‚
-3.  **ä½¿ç”¨**: 
-    * ç‚¹å‡»ä¾§è¾¹æ æœºå™¨äººå›¾æ ‡ï¼Œè¾“å…¥æ¦‚å¿µï¼ˆå¦‚â€œç†µå¢žå®šå¾‹â€ï¼‰ï¼Œç‚¹å‡»â€œæ·»åŠ åˆ°é˜Ÿåˆ—â€ã€‚
-    * OAK ä¼šåœ¨åŽå°é»˜é»˜å·¥ä½œï¼Œç”Ÿæˆå®Œæ¯•åŽè‡ªåŠ¨å°†ç¬”è®°ä¿å­˜åˆ°æŒ‡å®šç›®å½•ã€‚
+### ¶ÔÓÚÆÕÍ¨ÓÃ»§
+* ”9à4 **¿ªÏä¼´ÓÃ**£ºÄÚÖÃ¡°Éî¶È¸ÅÄîÉú³ÉÆ÷¡±£¬Ò»¼üÉú³É°üº¬ Mermaid Í¼±í¡¢ºËÐÄÒþÓ÷ºÍÉî¶È½âÎöµÄÖªÊ¶¿¨Æ¬¡£
+* 7²3 **ºóÌ¨ÔËÐÐ**£ºÈÎÎñÔÚºóÌ¨Ä¬Ä¬Íê³É£¬¾ø²»¿¨¶ÙÄãµÄÐ´×÷½çÃæ¡£
+* ”9ã4 **×Ô¶¯ÖØÊÔ**£ºÍøÂç²¨¶¯£¿API ±¨´í£¿OAK »á×Ô¶¯Ö¸ÊýÍË±ÜÖØÊÔ£¬È·±£ÈÎÎñ±Ø´ï¡£
+
+### ¶ÔÓÚ¿ª·¢Õß (Framework Mode)
+* •0á8 **ÊÂ¼þÇý¶¯¼Ü¹¹ (Event-Driven)**£º»ùÓÚ Pub/Sub µÄÖÐÑëÉñ¾­ÏµÍ³£¬ÇáËÉÊµÏÖ²å¼þ¼äµÄ½âñîÓëÁª¶¯¡£
+* ”9ä2 **±ê×¼»¯ API**: Ìá¹© `OakAPI`£¬ÔÊÐíÈÎºÎµÚÈý·½²å¼þ×¢²á Agent¡¢ÅÉ·¢ÈÎÎñ»ò¼àÌý×´Ì¬¡£
+* •0•1„1‚5 **ÎÈ½¡µ÷¶ÈºËÐÄ**: ÄÚÖÃ´íÎóÈÛ¶Ï¡¢ËÀÐÅ¶ÓÁÐ (Dead Letter Queue) ÓëÓÅÏÈ¼¶¹ÜÀí¡£
+* ”9Ü4 **³Ö¾Ã»¯´æ´¢**: ÈÎÎñ¶ÓÁÐÊµÊ±Ð´Èë´ÅÅÌ£¬¼´Ê¹ Obsidian ±ÀÀ£ÖØÆô£¬ÈÎÎñ½ø¶ÈÒÀÈ»²»¶ª¡£
+* •0Î3 **¶àÖÇÄÜÌåÁ÷Ë®Ïß**: Ö§³ÖÈÎÎñ½ÓÁ¦ (Chaining)£¬ÇáËÉ¹¹½¨ `Éú³É -> Éó²é -> ¹éµµ -> ·¢²¼` µÄ¸´ÔÓ¹¤×÷Á÷¡£
 
 ---
 
-## ðŸ§‘â€ðŸ’» å¼€å‘è€…æŒ‡å—ï¼šæž„å»ºä½ çš„ç¬¬ä¸€ä¸ª Agent
+## •0‹4 ¿ìËÙ¿ªÊ¼
 
-OAK çš„è®¾è®¡å“²å­¦æ˜¯ï¼š**"ä½ åªç®¡å†™ä¸šåŠ¡é€»è¾‘ï¼Œå‰©ä¸‹çš„äº¤ç»™æ¡†æž¶"**ã€‚
+### 1. °²×°ÓëÅäÖÃ
+1.  ÏÂÔØ²¢°²×°±¾²å¼þ¡£
+2.  ÔÚÉèÖÃÒ³ÅäÖÃ AI Provider£¨Ö§³Ö **OpenAI** / **Google Gemini**£©¡£
+3.  ¿ªÆô **Debug Mode** (¿ÉÑ¡) ÒÔ²é¿´ÏêÏ¸µÄµ÷¶ÈÈÕÖ¾¡£
 
-### ç¬¬ä¸€æ­¥ï¼šå®šä¹‰ä»»åŠ¡ä¸Ž Agent
+### 2. »ù´¡Ê¹ÓÃ
+* µã»÷²à±ßÀ¸µÄ •0Í6 **»úÆ÷ÈËÍ¼±ê**¡£
+* ÊäÈëÄãÏëÑÐ¾¿µÄ¸ÅÄî£¨ÀýÈç£º¡°ÄÉÊ²¾ùºâ¡±£©¡£
+* OAK ½«×Ô¶¯µ÷¶È Agent Éú³É±Ê¼Ç£¬²¢±£´æÖÁ `KnowledgeGraph` Ä¿Â¼¡£
 
-åˆ›å»ºä¸€ä¸ªç»§æ‰¿è‡ª `BaseAgent` çš„ç±»ã€‚ä½ æ— éœ€å…³å¿ƒé˜Ÿåˆ—æ€Žä¹ˆå­˜ã€API æ€Žä¹ˆè°ƒï¼Œåªéœ€å®žçŽ° `process` æ–¹æ³•ã€‚
+---
+
+## ”9Ó96¤9”9Ü1 ¿ª·¢ÕßÖ¸ÄÏ£º¹¹½¨ÄãµÄ AI ²å¼þ
+
+**±ðÔÙÖØ¸´ÔìÂÖ×ÓÁË¡£** ×¨×¢ÓÚÄãµÄÒµÎñÂß¼­£¬°Ñ¶ÓÁÐ¹ÜÀí¡¢API µ÷ÓÃºÍ³Ö¾Ã»¯½»¸ø OAK¡£
+
+### µÚÒ»²½£ºÁ¬½Ó¿ò¼Ü
+
+ÔÚÄãµÄ²å¼þ `onload` ÉúÃüÖÜÆÚÖÐÁ¬½Ó OAK£º
 
 ```typescript
-// src/agents/SummarizerAgent.ts
-import { BaseAgent } from "../core/BaseAgent";
-import { Notice } from "obsidian";
+// ÄãµÄ²å¼þ main.ts
+const oakPlugin = this.app.plugins.getPlugin('Obsidian-Agent-Kit');
 
-// 1. å®šä¹‰ä»»åŠ¡æ•°æ®ç»“æž„
-export interface SummarizeTask {
-    filePath: string;
-    fileContent: string;
-}
-
-export class SummarizerAgent extends BaseAgent<SummarizeTask> {
-    // 2. å®šä¹‰é˜Ÿåˆ—åç§° (å…¨å±€å”¯ä¸€)
-    get queueName(): string {
-        return "summarize_queue";
-    }
-
-    // 3. å®žçŽ°ä¸šåŠ¡é€»è¾‘
-    async process(task: SummarizeTask): Promise<boolean> {
-        this.log(`æ­£åœ¨å¤„ç†æ–‡ä»¶: ${task.filePath}`); // ä½¿ç”¨å†…ç½®æ—¥å¿—å·¥å…·
-
-        const prompt = `è¯·æ€»ç»“ä»¥ä¸‹å†…å®¹:\n\n${task.fileContent}`;
-        const summary = await this.llm.chat(prompt);
-
-        if (!summary) return false; // è¿”å›ž false ä¼šè§¦å‘æ¡†æž¶çš„è‡ªåŠ¨é‡è¯•æœºåˆ¶
-
-        // å†™å…¥ç»“æžœ
-        const targetFile = this.app.vault.getAbstractFileByPath(task.filePath);
-        if (targetFile) {
-            await this.app.vault.append(targetFile, `\n\n## AI æ‘˜è¦\n${summary}`);
-            new Notice(`æ‘˜è¦å·²ç”Ÿæˆ: ${task.filePath}`);
-        }
-        
-        return true; // ä»»åŠ¡æˆåŠŸï¼Œç§»å‡ºé˜Ÿåˆ—
-    }
+if (oakPlugin && oakPlugin.api) {
+    const oak = oakPlugin.api;
+    console.log(`7¼3 ÒÑÁ¬½Óµ½ OAK »ù´¡ÉèÊ© v${oak.version}`);
+} else {
+    console.error("7Ã4 Î´ÕÒµ½ OAK ¿ò¼Ü£¬ÇëÏÈ°²×°£¡");
 }
 ````
 
-### ç¬¬äºŒæ­¥ï¼šæ³¨å†Œ Agent
+### µÚ¶þ²½£º×¢²á Agent (°ìÀíÈëÖ°)
 
-åœ¨ `main.ts` ä¸­æ³¨å†Œä½ çš„ Agentï¼ŒOAK è°ƒåº¦å™¨ä¼šè‡ªåŠ¨æŽ¥ç®¡å®ƒã€‚
+¶¨ÒåÒ»¸ö Agent ²¢×¢²á¡£ÄãÎÞÐè¹ØÐÄ LLM ÈçºÎµ÷ÓÃ£¬Ö»Ðè¹Ø×¢ `process` ·½·¨¡£
 
 ```typescript
-// src/main.ts
-import { SummarizerAgent } from "./agents/SummarizerAgent";
+// ¶¨ÒåÄãµÄ Agent
+class ReviewAgent {
+    // 1. ¶¨Òå¶ÓÁÐÃû³Æ (±ØÐëÎ¨Ò»)
+    get queueName() { return 'review_queue'; }
 
-// ... åœ¨ onload() ä¸­
-this.orchestrator.registerAgent(new GeneratorAgent(this, this.llm));
-// æ³¨å†Œæ–° Agent
-this.orchestrator.registerAgent(new SummarizerAgent(this, this.llm)); 
+    // 2. ºËÐÄ´¦ÀíÂß¼­
+    async process(task) {
+        console.log("ÊÕµ½Éó²éÈÎÎñ:", task);
+        
+        // Ö´ÐÐÄãµÄÒµÎñÂß¼­...
+        // ...
+        
+        // 3. ·µ»Ø±ê×¼½á¹û
+        return { 
+            status: 'success', 
+            data: { reviewed: true, score: 95 },
+            // ¿ÉÑ¡£ºÈÎÎñÁ´£¬µ±Ç°ÈÎÎñÍê³Éºó×Ô¶¯´¥·¢ÏÂÒ»¸öÈÎÎñ
+            nextTasks: [] 
+        };
+    }
+}
+
+// ×¢²áµ½ OAK µ÷¶ÈÆ÷
+oak.registerAgent(new ReviewAgent(this.app));
 ```
 
-### ç¬¬ä¸‰æ­¥ï¼šæ´¾å‘ä»»åŠ¡
+### µÚÈý²½£ºÅÉ·¢ÈÎÎñÓë¼àÌý
 
-åœ¨ä»»ä½•åœ°æ–¹ï¼ˆRibbonã€Commandã€ç”šè‡³å¦ä¸€ä¸ª Agent ä¸­ï¼‰æ´¾å‘ä»»åŠ¡ã€‚
+Äã¿ÉÒÔÀûÓÃ OAK µÄÊÂ¼þ×ÜÏß£¬¼àÌýÆäËû²å¼þµÄ¶¯×÷£¬ÊµÏÖ**×Ô¶¯»¯Á÷Ë®Ïß**¡£
 
 ```typescript
-// å°†ä»»åŠ¡ä¸¢è¿›é˜Ÿåˆ—ï¼Œç«‹åˆ»è¿”å›žï¼Œä¸ä¼šå¡é¡¿ç•Œé¢
-this.orchestrator.addToQueue("summarize_queue", { 
-    filePath: "Notes/Meeting.md",
-    fileContent: "..." 
+// ³¡¾°£ºµ± "Éú³É¶ÓÁÐ" Íê³ÉÈÎÎñºó£¬×Ô¶¯´¥·¢ "Éó²é¶ÓÁÐ"
+oak.on('oak:task-completed', (data) => {
+    // data °üº¬: { queueName, taskId, result }
+    
+    if (data.queueName === 'generation_queue') {
+        console.log("¼ì²âµ½ÐÂÄÚÈÝÉú³É£¬Á÷Ë®ÏßÆô¶¯...");
+        
+        // ÅÉ·¢ÐÂÈÎÎñ
+        oak.dispatch(
+            'review_queue',                // Ä¿±ê¶ÓÁÐ
+            {                              // ÈÎÎñÔØºÉ
+                concept: data.result.filename,
+                originalTaskId: data.taskId 
+            },     
+            'My-Auto-Reviewer-Plugin'      // À´Ô´ ID (ÓÃÓÚµ÷ÊÔ×·×Ù)
+        );
+    }
 });
 ```
 
 -----
 
-## ðŸ“„ è®¸å¯è¯
+## ”9ß2 API ²Î¿¼
 
-[MIT](https://www.google.com/search?q=LICENSE)
+Í¨¹ý `plugin.api` ·ÃÎÊÒÔÏÂºËÐÄ·½·¨£º
 
+| ·½·¨Ç©Ãû | ÃèÊö |
+| :--- | :--- |
+| `registerAgent(agent: BaseAgent)` | ½«Ò»¸ö Agent ÊµÀý×¢²áµ½ÖÐÑëµ÷¶ÈÆ÷¡£ |
+| `dispatch(queue: string, payload: any, source?: string)` | ÏòÖ¸¶¨¶ÓÁÐÅÉ·¢Ò»¸öÐÂÈÎÎñ¡£·µ»Ø TaskID¡£ |
+| `on(event: string, callback: Function)` | ¶©ÔÄ¿ò¼ÜÊÂ¼þ¡£ |
+| `off(event: string, callback: Function)` | È¡Ïû¶©ÔÄ¡£ |
+
+### ÊÂ¼þÁÐ±í (`oak:`)
+
+  * •0®8 `task-added`: ÈÎÎñ³É¹¦½øÈë¶ÓÁÐ¡£
+  * •0®7 `task-started`: Agent ¿ªÊ¼´¦ÀíÈÎÎñ¡£
+  * 7¼3 `task-completed`: ÈÎÎñÖ´ÐÐ³É¹¦¡£
+  * 7Ã4 `task-failed`: ÈÎÎñÖ´ÐÐ³ö´í£¨½«´¥·¢ÖØÊÔ£©¡£
+  * ”9÷9„1‚5 `task-discarded`: ³¬¹ý×î´óÖØÊÔ´ÎÊý£¬ÈÎÎñ±»¶ªÆú¡£
+
+-----
+
+## ”9ü0„1‚5 Â·ÏßÍ¼ (Roadmap)
+
+  - [x] **v1.0**: »ù´¡µ÷¶ÈÆ÷Óë³Ö¾Ã»¯²ã¡£
+  - [x] **v1.1**: ¿ª·Å API¡¢ÊÂ¼þ×ÜÏßÓë¶àÖÇÄÜÌåÐ­×÷Ö§³Ö¡£
+  - [ ] **v1.2**: ¿ÉÊÓ»¯ÒÇ±íÅÌ (Dashboard View)£¬ÊµÊ±¼à¿Ø¶ÓÁÐ×´Ì¬¡£
+  - [ ] **v1.5**: Ö§³Ö±¾µØ LLM (Ollama) ÊÊÅäÆ÷¡£
+  - [ ] **v2.0**: ²å¼þÊÐ³¡Óë Agent Ô¤Éè¿â¡£
+
+-----
+
+## ”9Ý0 Ðí¿ÉÖ¤
+
+[MIT License](https://www.google.com/search?q=LICENSE) 0„8 2025 logicflow-GYW
+
+Designed with 7Å8„1‚5 for the [Obsidian](https://obsidian.md) Community.
+
+```
+```

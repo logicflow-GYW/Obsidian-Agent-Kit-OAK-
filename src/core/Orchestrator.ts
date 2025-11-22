@@ -1,14 +1,17 @@
 // src/core/Orchestrator.ts
 import { Notice } from "obsidian";
 import { BaseAgent } from "./BaseAgent";
-import { TaskItem, QueueData } from "./types";
+import { TaskItem } from "./types";
+import { EventBus, OakEvents } from "./EventBus";
 import AgentKitPlugin from "../main";
 import { Logger } from "./utils";
+import { AgentResult } from "../api"; // 引入新定义的接口
 
 export class Orchestrator {
     private _isRunning = false;
     private agents: BaseAgent<any>[] = [];
     private plugin: AgentKitPlugin;
+    private eventBus: EventBus;
 
     public get isRunning(): boolean {
         return this._isRunning;
@@ -16,11 +19,11 @@ export class Orchestrator {
 
     constructor(plugin: AgentKitPlugin) {
         this.plugin = plugin;
+        this.eventBus = EventBus.getInstance();
     }
 
     registerAgent(agent: BaseAgent<any>) {
         this.agents.push(agent);
-        // 确保队列初始化
         if (!this.plugin.queueData[agent.queueName]) {
             this.plugin.queueData[agent.queueName] = [];
         }
@@ -32,15 +35,17 @@ export class Orchestrator {
             this.plugin.queueData[queueName] = [];
         }
         
-        // 赋予默认属性
-        item.retries = 0;
-        if (!item.id) item.id = Date.now().toString(); // 简单的 ID 生成
+        // 初始化元数据
+        item.retries = item.retries || 0;
+        if (!item.id) item.id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+        if (!item.timestamp) item.timestamp = Date.now();
 
         this.plugin.queueData[queueName].push(item);
         
-        // 通过 Persistence 保存
+        // 保存并广播
         await this.plugin.persistence.saveQueueData(this.plugin.queueData);
-        Logger.log(`Task added to ${queueName}`);
+        this.eventBus.emit(OakEvents.TASK_ADDED, { queueName, task: item });
+        Logger.log(`Task added to ${queueName} (Source: ${item.sourcePluginId || 'System'})`);
     }
 
     start() {
@@ -73,34 +78,46 @@ export class Orchestrator {
                 
                 try {
                     Logger.log(`Processing task in ${queueName}...`);
-                    const success = await agent.process(item);
+                    this.eventBus.emit(OakEvents.TASK_STARTED, { queueName, task: item });
                     
-                    if (success) {
+                    // 兼容旧版返回 boolean，新版返回 AgentResult
+                    const result: boolean | AgentResult = await agent.process(item);
+                    
+                    // 归一化处理结果
+                    const isSuccess = typeof result === 'boolean' ? result : result.status === 'success';
+
+                    if (isSuccess) {
                         queue.shift(); // 移除成功任务
                         workDone = true;
+                        
+                        const outputData = typeof result === 'object' ? result.data : null;
+                        
+                        // 触发完成事件
+                        this.eventBus.emit(OakEvents.TASK_COMPLETED, { 
+                            queueName, 
+                            taskId: item.id, 
+                            result: outputData 
+                        });
+
+                        // 处理任务链 (Chaining)
+                        if (typeof result === 'object' && result.nextTasks && result.nextTasks.length > 0) {
+                            Logger.log(`🔗 Triggering ${result.nextTasks.length} next tasks`);
+                            for (const next of result.nextTasks) {
+                                await this.addToQueue(next.queueName, {
+                                    ...next.payload,
+                                    sourcePluginId: 'OAK-Chaining', // 标记为内部链式触发
+                                    parentId: item.id
+                                });
+                            }
+                        }
+
                     } else {
-                        throw new Error("Agent process returned false.");
+                        throw new Error(typeof result === 'object' ? result.message : "Agent process returned false");
                     }
                 } catch (error) {
-                    Logger.error(`Agent ${agent.constructor.name} failed:`, error);
+                    this.handleFailure(queue, item, queueName, error);
                     workDone = true;
-                    
-                    const failedItem = queue.shift();
-                    if (failedItem) {
-                        failedItem.retries = (failedItem.retries || 0) + 1;
-                        
-                        const maxRetries = this.plugin.settings.maxRetries || 3;
-                        if (failedItem.retries < maxRetries) {
-                            queue.push(failedItem); // 重新入队到末尾
-                            Logger.warn(`Task retrying (${failedItem.retries}/${maxRetries})`);
-                        } else {
-                            Logger.error(`Task max retries reached. Discarding.`);
-                            new Notice(`任务已达最大重试次数，已被放弃。`);
-                            // 这里可以考虑加一个 "discarded" 队列，就像 KGG 那样
-                        }
-                    }
                 } finally {
-                    // 每次任务处理完（无论成功失败），保存队列状态
                     await this.plugin.persistence.saveQueueData(this.plugin.queueData);
                 }
             }
@@ -111,6 +128,26 @@ export class Orchestrator {
             setTimeout(() => {
                 this.loop().catch(err => Logger.error("Loop timeout error:", err));
             }, delay);
+        }
+    }
+
+    private handleFailure(queue: TaskItem[], item: TaskItem, queueName: string, error: any) {
+        Logger.error(`Agent failed in ${queueName}:`, error);
+        
+        const failedItem = queue.shift();
+        if (failedItem) {
+            failedItem.retries = (failedItem.retries || 0) + 1;
+            const maxRetries = this.plugin.settings.maxRetries || 3;
+
+            if (failedItem.retries < maxRetries) {
+                queue.push(failedItem); // 重新入队
+                this.eventBus.emit(OakEvents.TASK_FAILED, { queueName, task: failedItem, error });
+                Logger.warn(`Task retrying (${failedItem.retries}/${maxRetries})`);
+            } else {
+                this.eventBus.emit(OakEvents.TASK_DISCARDED, { queueName, task: failedItem, error });
+                Logger.error(`Task max retries reached. Discarding.`);
+                new Notice(`任务已达最大重试次数，已被放弃。`);
+            }
         }
     }
 }

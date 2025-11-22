@@ -1,13 +1,15 @@
 // src/main.ts
 import { Plugin, Notice } from "obsidian";
-import { OAKSettings, QueueData } from "./core/types"; // 更新引用
+import { OAKSettings, QueueData } from "./core/types";
 import { Orchestrator } from "./core/Orchestrator";
 import { LLMProvider } from "./core/LLMProvider";
-import { Persistence } from "./core/Persistence"; // 新增
-import { Logger } from "./core/utils"; // 新增
+import { Persistence } from "./core/Persistence";
+import { Logger } from "./core/utils";
 import { GeneratorAgent } from "./agents/GeneratorAgent"; 
 import { OAKSettingTab } from "./settings";
 import { InputModal } from "./InputModal"; 
+import { OakAPI } from "./api"; // 引入 API 定义
+import { EventBus } from "./core/EventBus"; // 引入 EventBus
 
 const DEFAULT_SETTINGS: OAKSettings = {
     llmProvider: "openai",
@@ -24,40 +26,54 @@ const DEFAULT_SETTINGS: OAKSettings = {
 
 export default class AgentKitPlugin extends Plugin {
     settings: OAKSettings;
-    queueData: QueueData; // 运行时队列数据
+    queueData: QueueData; 
     
     orchestrator: Orchestrator;
     llm: LLMProvider;
     persistence: Persistence;
+    eventBus: EventBus;
+
+    // --- 核心：暴露 API 给其他插件 ---
+    public get api(): OakAPI {
+        return {
+            version: this.manifest.version,
+            registerAgent: (agent) => this.orchestrator.registerAgent(agent),
+            dispatch: async (queueName, payload, sourcePluginId) => {
+                // 为外部调用注入来源ID
+                const item = { ...payload, sourcePluginId: sourcePluginId || 'External' };
+                await this.orchestrator.addToQueue(queueName, item);
+                // 确保引擎已启动
+                if (!this.orchestrator.isRunning) this.orchestrator.start();
+                return item.id; 
+            },
+            on: (event, cb) => this.eventBus.on(event, cb),
+            off: (event, cb) => this.eventBus.off(event, cb)
+        };
+    }
+    // ------------------------------
 
     async onload() {
-        // 1. 加载配置 (data.json)
         await this.loadSettings();
         Logger.setDebugMode(this.settings.debug_mode);
 
-        // 2. 初始化持久化层
         this.persistence = new Persistence(this);
         await this.persistence.init();
 
-        // 3. 加载队列数据 (queues.json)
         this.queueData = await this.persistence.loadQueueData();
         
-        // 4. 确保输出目录存在
+        // 初始化 EventBus
+        this.eventBus = EventBus.getInstance();
+        
         if (!await this.app.vault.adapter.exists(this.settings.output_dir)) {
             await this.app.vault.createFolder(this.settings.output_dir);
         }
 
         this.addSettingTab(new OAKSettingTab(this.app, this));
 
-        // 5. 初始化核心组件
-        // 注意：LLMProvider 仍然使用旧版，暂不修改，下一阶段升级
         this.llm = new LLMProvider(() => this.settings);
         this.orchestrator = new Orchestrator(this);
 
-        // 6. 注册 Agent
-        // GeneratorAgent 需要适配新的 BaseAgent 签名，但在本阶段 BaseAgent 变动较小，
-        // 主要是 types 变了，Agent 代码可能只需要很少修改。
-        // 我们这里要把 'this' cast 一下或者确保 GeneratorAgent 接受的 context 正确
+        // 注册内置 Agent
         this.orchestrator.registerAgent(new GeneratorAgent(this, this.llm));
 
         // --- Commands & UI ---
@@ -66,14 +82,9 @@ export default class AgentKitPlugin extends Plugin {
             name: '添加新概念到生成队列',
             callback: () => {
                 new InputModal(this.app, (concept) => {
-                    this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept: concept })
-                        .then(() => {
-                            new Notice(`已将 '${concept}' 加入队列。`);
-                        })
-                        .catch((err) => {
-                            Logger.error("Failed to add to queue:", err);
-                            new Notice("加入队列失败，请查看控制台。");
-                        });
+                    // 内部调用也可以走 dispatch，保持一致性
+                    this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, 'OAK-GUI')
+                        .then(() => new Notice(`已将 '${concept}' 加入队列。`));
                 }).open();
             }
         });
@@ -92,33 +103,25 @@ export default class AgentKitPlugin extends Plugin {
         
         this.addRibbonIcon('bot', 'OAK: 添加新概念', () => {
             new InputModal(this.app, (concept) => {
-                this.orchestrator.addToQueue(GeneratorAgent.QUEUE_NAME, { concept: concept })
-                    .then(() => {
-                         if (!this.orchestrator.isRunning) {
-                            this.orchestrator.start(); 
-                        }
-                    })
-                    .catch(err => Logger.error(err));
+                this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, 'OAK-Ribbon');
             }).open();
         });
         
-        Logger.log("OAK Agent Kit loaded.");
+        Logger.log("OAK Agent Kit (Framework Mode) loaded.");
     }
 
     onunload() {
+        this.orchestrator.stop();
+        // 清理事件监听，如果有的话
         Logger.log("OAK Agent Kit unloaded.");
     }
 
     async loadSettings() {
-        // 仅加载 data.json 中的配置
         const loaded = await this.loadData();
         this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
     }
 
     async saveSettings() {
-        // 仅保存配置
         await this.saveData(this.settings);
     }
-    
-    // 注意：移除了 savePluginData 之类的方法，现在由 Persistence 接管
 }
