@@ -147,82 +147,117 @@ var import_obsidian2 = require("obsidian");
 var LLMProvider = class {
   constructor(getSettings) {
     this.getSettings = getSettings;
+    // 内存中维护 Key 的状态（重启 Obsidian 后重置）
+    this.keyUsageOpenAI = /* @__PURE__ */ new Map();
+    this.keyUsageGoogle = /* @__PURE__ */ new Map();
+    // 失败冷却时间 (秒)
+    this.COOLDOWN_SECONDS = 300;
   }
+  /**
+   * 对外的主入口：智能调度
+   */
   async chat(prompt) {
     const settings = this.getSettings();
     const provider = settings.llmProvider;
     try {
       if (provider === "openai") {
-        return await this.callOpenAI(prompt);
-      } else if (provider === "google") {
-        return await this.callGoogle(prompt);
+        return await this.tryOpenAIFirst(prompt);
       } else {
-        throw new Error(`未知的提供商: ${provider}`);
+        return await this.tryGoogleFirst(prompt);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error("[LLM Error]", error);
-      new import_obsidian2.Notice(`AI 调用全线失败: ${msg}`);
+      Logger.error("[LLM Fatal Error]", error);
+      new import_obsidian2.Notice(`AI 全线崩溃: ${msg}`);
       return "";
     }
   }
-  // 辅助：将多行文本解析为 Key 数组
-  getKeys(keyString) {
-    if (!keyString)
-      return [];
-    return keyString.split("\n").map((k) => k.trim()).filter((k) => k.length > 0);
+  // --- 策略层 ---
+  async tryOpenAIFirst(prompt) {
+    try {
+      return await this.callOpenAI(prompt);
+    } catch (e) {
+      Logger.warn("OpenAI failed, attempting failover to Google...", e);
+      if (this.getKeys(this.getSettings().googleApiKey).length > 0) {
+        new import_obsidian2.Notice("OpenAI 暂时不可用，正在切换至 Google...");
+        return await this.callGoogle(prompt);
+      }
+      throw e;
+    }
   }
+  async tryGoogleFirst(prompt) {
+    try {
+      return await this.callGoogle(prompt);
+    } catch (e) {
+      Logger.warn("Google failed, attempting failover to OpenAI...", e);
+      if (this.getKeys(this.getSettings().openaiApiKey).length > 0) {
+        new import_obsidian2.Notice("Google 暂时不可用，正在切换至 OpenAI...");
+        return await this.callOpenAI(prompt);
+      }
+      throw e;
+    }
+  }
+  // --- 执行层 (含多 Key 轮换) ---
   async callOpenAI(prompt) {
     const settings = this.getSettings();
-    const keys = this.getKeys(settings.openaiApiKey);
+    const keys = this.getAvailableKeys(settings.openaiApiKey, "openai");
     if (keys.length === 0)
-      throw new Error("OpenAI API Key 未配置");
+      throw new Error("OpenAI API Key 耗尽或未配置 (所有 Key 均在冷却中)");
     let lastError = null;
     for (const apiKey of keys) {
       try {
-        return await this._requestOpenAI(apiKey, settings, prompt);
+        Logger.log(`Trying OpenAI Key: ...${apiKey.slice(-4)}`);
+        const result = await this._requestOpenAI(apiKey, settings, prompt);
+        this.resetCooldown(apiKey, "openai");
+        return result;
       } catch (error) {
-        Logger.warn(`OpenAI Key (...${apiKey.slice(-4)}) failed: ${error.message}. Trying next...`);
+        Logger.warn(`OpenAI Key ...${apiKey.slice(-4)} failed: ${error.message}`);
         lastError = error;
+        if (this.isQuotaError(error)) {
+          this.applyCooldown(apiKey, "openai");
+        }
       }
     }
     throw lastError || new Error("All OpenAI keys failed.");
   }
+  async callGoogle(prompt) {
+    const settings = this.getSettings();
+    const keys = this.getAvailableKeys(settings.googleApiKey, "google");
+    if (keys.length === 0)
+      throw new Error("Google API Key 耗尽或未配置");
+    let lastError = null;
+    for (const apiKey of keys) {
+      try {
+        Logger.log(`Trying Google Key: ...${apiKey.slice(-4)}`);
+        const result = await this._requestGoogle(apiKey, settings, prompt);
+        this.resetCooldown(apiKey, "google");
+        return result;
+      } catch (error) {
+        Logger.warn(`Google Key ...${apiKey.slice(-4)} failed: ${error.message}`);
+        lastError = error;
+        if (this.isQuotaError(error)) {
+          this.applyCooldown(apiKey, "google");
+        }
+      }
+    }
+    throw lastError || new Error("All Google keys failed.");
+  }
+  // --- 底层请求 (Base Request) ---
   async _requestOpenAI(apiKey, settings, prompt) {
     const url = `${settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
     const response = await (0, import_obsidian2.requestUrl)({
       url,
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: settings.openaiModel,
         messages: [{ role: "user", content: prompt }],
         temperature: 0.7
       })
     });
-    if (response.status >= 400) {
-      throw new Error(`OpenAI API Error: ${response.status}`);
-    }
+    if (response.status >= 400)
+      throw new Error(`OpenAI Status ${response.status}`);
     return response.json.choices[0].message.content.trim();
-  }
-  async callGoogle(prompt) {
-    const settings = this.getSettings();
-    const keys = this.getKeys(settings.googleApiKey);
-    if (keys.length === 0)
-      throw new Error("Google API Key 未配置");
-    let lastError = null;
-    for (const apiKey of keys) {
-      try {
-        return await this._requestGoogle(apiKey, settings, prompt);
-      } catch (error) {
-        Logger.warn(`Google Key (...${apiKey.slice(-4)}) failed: ${error.message}. Trying next...`);
-        lastError = error;
-      }
-    }
-    throw lastError || new Error("All Google keys failed.");
   }
   async _requestGoogle(apiKey, settings, prompt) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${apiKey}`;
@@ -230,17 +265,48 @@ var LLMProvider = class {
       url,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
     });
-    if (response.status >= 400) {
-      throw new Error(`Google API Error: ${response.status}`);
-    }
+    if (response.status >= 400)
+      throw new Error(`Google Status ${response.status}`);
     if (response.json.candidates && response.json.candidates.length > 0) {
       return response.json.candidates[0].content.parts[0].text.trim();
     }
     return "";
+  }
+  // --- 辅助工具 ---
+  getKeys(keyString) {
+    if (!keyString)
+      return [];
+    return keyString.split("\n").map((k) => k.trim()).filter((k) => k.length > 0);
+  }
+  getAvailableKeys(keyString, provider) {
+    const allKeys = this.getKeys(keyString);
+    const map = provider === "openai" ? this.keyUsageOpenAI : this.keyUsageGoogle;
+    const now = Date.now() / 1e3;
+    return allKeys.filter((key) => {
+      const usage = map.get(key);
+      if (!usage)
+        return true;
+      return now >= usage.cooldown_until;
+    });
+  }
+  isQuotaError(error) {
+    const msg = (error.message || "").toLowerCase();
+    if (msg.includes("429") || msg.includes("401") || msg.includes("403"))
+      return true;
+    if (msg.includes("quota") || msg.includes("rate limit") || msg.includes("insufficient"))
+      return true;
+    return false;
+  }
+  applyCooldown(key, provider) {
+    const map = provider === "openai" ? this.keyUsageOpenAI : this.keyUsageGoogle;
+    map.set(key, { cooldown_until: Date.now() / 1e3 + this.COOLDOWN_SECONDS });
+    Logger.warn(`❄️ Key ...${key.slice(-4)} 冷却 5 分钟.`);
+  }
+  resetCooldown(key, provider) {
+    const map = provider === "openai" ? this.keyUsageOpenAI : this.keyUsageGoogle;
+    map.delete(key);
   }
 };
 
@@ -381,63 +447,35 @@ var OAKSettingTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian4.Setting(containerEl).setName("General").setHeading();
-    new import_obsidian4.Setting(containerEl).setName("Debug mode").setDesc("Enable verbose logging in console for troubleshooting.").addToggle((toggle) => toggle.setValue(this.plugin.settings.debug_mode).onChange(async (value) => {
+    new import_obsidian4.Setting(containerEl).setName("Debug mode").setDesc("在控制台显示详细日志 (推荐开启以观察故障切换)").addToggle((toggle) => toggle.setValue(this.plugin.settings.debug_mode).onChange(async (value) => {
       this.plugin.settings.debug_mode = value;
       Logger.setDebugMode(value);
       await this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName("AI Model Provider").addDropdown((d) => d.addOption("openai", "OpenAI").addOption("google", "Google").setValue(this.plugin.settings.llmProvider).onChange(async (v) => {
+    new import_obsidian4.Setting(containerEl).setName("Primary Provider").setDesc("首选 AI 提供商。当其所有 Key 均不可用时，会自动尝试另一个。").addDropdown((d) => d.addOption("openai", "OpenAI").addOption("google", "Google").setValue(this.plugin.settings.llmProvider).onChange(async (v) => {
       this.plugin.settings.llmProvider = v;
       await this.plugin.saveSettings();
       this.display();
     }));
     if (this.plugin.settings.llmProvider === "openai") {
-      new import_obsidian4.Setting(containerEl).setName("OpenAI").setHeading();
-      new import_obsidian4.Setting(containerEl).setName("API Keys").setDesc("支持多 Key 轮换。请每行输入一个 API Key。当第一个失败时，会自动尝试下一个。").addTextArea((t) => {
-        t.setValue(this.plugin.settings.openaiApiKey).onChange(async (v) => {
-          this.plugin.settings.openaiApiKey = v;
-          await this.plugin.saveSettings();
-        });
-        t.inputEl.rows = 4;
-        t.inputEl.style.width = "100%";
-      });
-      new import_obsidian4.Setting(containerEl).setName("Base URL").addText((t) => t.setValue(this.plugin.settings.openaiBaseUrl).onChange(async (v) => {
-        this.plugin.settings.openaiBaseUrl = v;
-        await this.plugin.saveSettings();
-      }));
-      new import_obsidian4.Setting(containerEl).setName("Model Name").addText((t) => t.setValue(this.plugin.settings.openaiModel).onChange(async (v) => {
-        this.plugin.settings.openaiModel = v;
-        await this.plugin.saveSettings();
-      }));
+      new import_obsidian4.Setting(containerEl).setName("OpenAI Settings").setHeading();
+      this.addOpenAISettings(containerEl);
+      this.addGoogleSettings(containerEl);
+    } else {
+      new import_obsidian4.Setting(containerEl).setName("Google Settings").setHeading();
+      this.addGoogleSettings(containerEl);
+      this.addOpenAISettings(containerEl);
     }
-    if (this.plugin.settings.llmProvider === "google") {
-      new import_obsidian4.Setting(containerEl).setName("Google Gemini").setHeading();
-      new import_obsidian4.Setting(containerEl).setName("API Keys").setDesc("支持多 Key 轮换。请每行输入一个 API Key。").addTextArea((t) => {
-        t.setValue(this.plugin.settings.googleApiKey).onChange(async (v) => {
-          this.plugin.settings.googleApiKey = v;
-          await this.plugin.saveSettings();
-        });
-        t.inputEl.rows = 4;
-        t.inputEl.style.width = "100%";
-      });
-      new import_obsidian4.Setting(containerEl).setName("Model Name").addText((t) => t.setValue(this.plugin.settings.googleModel).onChange(async (v) => {
-        this.plugin.settings.googleModel = v;
-        await this.plugin.saveSettings();
-      }));
-    }
-    new import_obsidian4.Setting(containerEl).setName("Engine").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("Engine Settings").setHeading();
     new import_obsidian4.Setting(containerEl).setName("Output Folder").addText((t) => t.setValue(this.plugin.settings.output_dir).onChange(async (v) => {
       this.plugin.settings.output_dir = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Max Retries").setDesc("How many times to retry a failed task.").addText((t) => t.setValue(String(this.plugin.settings.maxRetries)).onChange(async (v) => {
-      const num = parseInt(v);
-      if (!isNaN(num)) {
-        this.plugin.settings.maxRetries = num;
-        await this.plugin.saveSettings();
-      }
+    new import_obsidian4.Setting(containerEl).setName("Max Retries").addText((t) => t.setValue(String(this.plugin.settings.maxRetries)).onChange(async (v) => {
+      this.plugin.settings.maxRetries = parseInt(v);
+      await this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName("Generator Prompt Template").addTextArea((t) => {
+    new import_obsidian4.Setting(containerEl).setName("Prompt Template").addTextArea((t) => {
       t.setValue(this.plugin.settings.prompt_generator).onChange(async (v) => {
         this.plugin.settings.prompt_generator = v;
         await this.plugin.saveSettings();
@@ -445,6 +483,38 @@ var OAKSettingTab = class extends import_obsidian4.PluginSettingTab {
       t.inputEl.rows = 5;
       t.inputEl.style.width = "100%";
     });
+  }
+  addOpenAISettings(el) {
+    new import_obsidian4.Setting(el).setName("OpenAI Keys").setDesc("一行一个 Key。支持自动轮换和冷却。").addTextArea((t) => {
+      t.setValue(this.plugin.settings.openaiApiKey).onChange(async (v) => {
+        this.plugin.settings.openaiApiKey = v;
+        await this.plugin.saveSettings();
+      });
+      t.inputEl.rows = 3;
+      t.inputEl.style.width = "100%";
+    });
+    new import_obsidian4.Setting(el).setName("Base URL").addText((t) => t.setValue(this.plugin.settings.openaiBaseUrl).onChange(async (v) => {
+      this.plugin.settings.openaiBaseUrl = v;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian4.Setting(el).setName("Model").addText((t) => t.setValue(this.plugin.settings.openaiModel).onChange(async (v) => {
+      this.plugin.settings.openaiModel = v;
+      await this.plugin.saveSettings();
+    }));
+  }
+  addGoogleSettings(el) {
+    new import_obsidian4.Setting(el).setName("Google Keys").setDesc("一行一个 Key。").addTextArea((t) => {
+      t.setValue(this.plugin.settings.googleApiKey).onChange(async (v) => {
+        this.plugin.settings.googleApiKey = v;
+        await this.plugin.saveSettings();
+      });
+      t.inputEl.rows = 3;
+      t.inputEl.style.width = "100%";
+    });
+    new import_obsidian4.Setting(el).setName("Model").addText((t) => t.setValue(this.plugin.settings.googleModel).onChange(async (v) => {
+      this.plugin.settings.googleModel = v;
+      await this.plugin.saveSettings();
+    }));
   }
 };
 

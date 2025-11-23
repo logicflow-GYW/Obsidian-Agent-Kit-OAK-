@@ -3,69 +3,137 @@ import { requestUrl, Notice } from "obsidian";
 import { OAKSettings } from "./types";
 import { Logger } from "./utils";
 
+// 定义 Key 的使用状态
+interface KeyUsageStatus {
+    cooldown_until: number;
+}
+
 export class LLMProvider {
+    // 内存中维护 Key 的状态（重启 Obsidian 后重置）
+    private keyUsageOpenAI = new Map<string, KeyUsageStatus>();
+    private keyUsageGoogle = new Map<string, KeyUsageStatus>();
+    
+    // 失败冷却时间 (秒)
+    private readonly COOLDOWN_SECONDS = 300; 
+
     constructor(private getSettings: () => OAKSettings) {}
 
+    /**
+     * 对外的主入口：智能调度
+     */
     async chat(prompt: string): Promise<string> {
         const settings = this.getSettings();
-        const provider = settings.llmProvider;
+        const provider = settings.llmProvider; // 用户首选的提供商
 
         try {
+            // 策略：首选 -> 备选
             if (provider === "openai") {
-                return await this.callOpenAI(prompt);
-            } else if (provider === "google") {
-                return await this.callGoogle(prompt);
+                return await this.tryOpenAIFirst(prompt);
             } else {
-                throw new Error(`未知的提供商: ${provider}`);
+                return await this.tryGoogleFirst(prompt);
             }
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
-            console.error("[LLM Error]", error);
-            new Notice(`AI 调用全线失败: ${msg}`);
-            return ""; 
+            Logger.error("[LLM Fatal Error]", error);
+            new Notice(`AI 全线崩溃: ${msg}`);
+            return ""; // 返回空字符串表示失败，由 Agent 处理重试
         }
     }
 
-    // 辅助：将多行文本解析为 Key 数组
-    private getKeys(keyString: string): string[] {
-        if (!keyString) return [];
-        return keyString.split('\n')
-            .map(k => k.trim())
-            .filter(k => k.length > 0);
+    // --- 策略层 ---
+
+    private async tryOpenAIFirst(prompt: string): Promise<string> {
+        try {
+            return await this.callOpenAI(prompt);
+        } catch (e) {
+            Logger.warn("OpenAI failed, attempting failover to Google...", e);
+            // 如果配置了 Google Key，尝试故障转移
+            if (this.getKeys(this.getSettings().googleApiKey).length > 0) {
+                new Notice("OpenAI 暂时不可用，正在切换至 Google...");
+                return await this.callGoogle(prompt);
+            }
+            throw e;
+        }
     }
+
+    private async tryGoogleFirst(prompt: string): Promise<string> {
+        try {
+            return await this.callGoogle(prompt);
+        } catch (e) {
+            Logger.warn("Google failed, attempting failover to OpenAI...", e);
+            if (this.getKeys(this.getSettings().openaiApiKey).length > 0) {
+                new Notice("Google 暂时不可用，正在切换至 OpenAI...");
+                return await this.callOpenAI(prompt);
+            }
+            throw e;
+        }
+    }
+
+    // --- 执行层 (含多 Key 轮换) ---
 
     private async callOpenAI(prompt: string): Promise<string> {
         const settings = this.getSettings();
-        const keys = this.getKeys(settings.openaiApiKey);
+        const keys = this.getAvailableKeys(settings.openaiApiKey, "openai");
         
-        if (keys.length === 0) throw new Error("OpenAI API Key 未配置");
+        if (keys.length === 0) throw new Error("OpenAI API Key 耗尽或未配置 (所有 Key 均在冷却中)");
 
         let lastError: Error | null = null;
 
-        // 轮询尝试所有 Keys
         for (const apiKey of keys) {
             try {
-                return await this._requestOpenAI(apiKey, settings, prompt);
+                Logger.log(`Trying OpenAI Key: ...${apiKey.slice(-4)}`);
+                const result = await this._requestOpenAI(apiKey, settings, prompt);
+                // 成功！清除冷却状态（如果有）
+                this.resetCooldown(apiKey, "openai");
+                return result;
             } catch (error: any) {
-                Logger.warn(`OpenAI Key (...${apiKey.slice(-4)}) failed: ${error.message}. Trying next...`);
+                Logger.warn(`OpenAI Key ...${apiKey.slice(-4)} failed: ${error.message}`);
                 lastError = error;
-                // 继续下一次循环
+                
+                // 如果是额度/权限错误，标记冷却
+                if (this.isQuotaError(error)) {
+                    this.applyCooldown(apiKey, "openai");
+                }
+                // 继续尝试下一个 Key
             }
         }
-        
         throw lastError || new Error("All OpenAI keys failed.");
     }
 
+    private async callGoogle(prompt: string): Promise<string> {
+        const settings = this.getSettings(); 
+        const keys = this.getAvailableKeys(settings.googleApiKey, "google");
+
+        if (keys.length === 0) throw new Error("Google API Key 耗尽或未配置");
+
+        let lastError: Error | null = null;
+
+        for (const apiKey of keys) {
+            try {
+                Logger.log(`Trying Google Key: ...${apiKey.slice(-4)}`);
+                const result = await this._requestGoogle(apiKey, settings, prompt);
+                this.resetCooldown(apiKey, "google");
+                return result;
+            } catch (error: any) {
+                Logger.warn(`Google Key ...${apiKey.slice(-4)} failed: ${error.message}`);
+                lastError = error;
+                
+                if (this.isQuotaError(error)) {
+                    this.applyCooldown(apiKey, "google");
+                }
+            }
+        }
+        throw lastError || new Error("All Google keys failed.");
+    }
+
+    // --- 底层请求 (Base Request) ---
+
     private async _requestOpenAI(apiKey: string, settings: OAKSettings, prompt: string): Promise<string> {
         const url = `${settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
-        
         const response = await requestUrl({
             url: url,
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${apiKey}`
-            },
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
             body: JSON.stringify({
                 model: settings.openaiModel,
                 messages: [{ role: "user", content: prompt }],
@@ -73,54 +141,62 @@ export class LLMProvider {
             })
         });
 
-        if (response.status >= 400) {
-            throw new Error(`OpenAI API Error: ${response.status}`);
-        }
-
+        if (response.status >= 400) throw new Error(`OpenAI Status ${response.status}`);
         return response.json.choices[0].message.content.trim();
-    }
-
-    private async callGoogle(prompt: string): Promise<string> {
-        const settings = this.getSettings(); 
-        const keys = this.getKeys(settings.googleApiKey);
-
-        if (keys.length === 0) throw new Error("Google API Key 未配置");
-
-        let lastError: Error | null = null;
-
-        // 轮询尝试所有 Keys
-        for (const apiKey of keys) {
-            try {
-                return await this._requestGoogle(apiKey, settings, prompt);
-            } catch (error: any) {
-                Logger.warn(`Google Key (...${apiKey.slice(-4)}) failed: ${error.message}. Trying next...`);
-                lastError = error;
-                // 继续下一次循环
-            }
-        }
-
-        throw lastError || new Error("All Google keys failed.");
     }
 
     private async _requestGoogle(apiKey: string, settings: OAKSettings, prompt: string): Promise<string> {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${apiKey}`;
-
         const response = await requestUrl({
             url: url,
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-            })
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         });
 
-        if (response.status >= 400) {
-            throw new Error(`Google API Error: ${response.status}`);
-        }
-
+        if (response.status >= 400) throw new Error(`Google Status ${response.status}`);
         if (response.json.candidates && response.json.candidates.length > 0) {
              return response.json.candidates[0].content.parts[0].text.trim();
         }
         return "";
+    }
+
+    // --- 辅助工具 ---
+
+    private getKeys(keyString: string): string[] {
+        if (!keyString) return [];
+        return keyString.split('\n').map(k => k.trim()).filter(k => k.length > 0);
+    }
+
+    private getAvailableKeys(keyString: string, provider: 'openai' | 'google'): string[] {
+        const allKeys = this.getKeys(keyString);
+        const map = provider === 'openai' ? this.keyUsageOpenAI : this.keyUsageGoogle;
+        const now = Date.now() / 1000;
+        
+        // 过滤掉正在冷却的 Key
+        return allKeys.filter(key => {
+            const usage = map.get(key);
+            if (!usage) return true; // 没记录 = 可用
+            return now >= usage.cooldown_until;
+        });
+    }
+
+    private isQuotaError(error: any): boolean {
+        const msg = (error.message || "").toLowerCase();
+        // 429: Too Many Requests, 401: Unauthorized (Key 无效), 403: Forbidden (余额不足)
+        if (msg.includes("429") || msg.includes("401") || msg.includes("403")) return true;
+        if (msg.includes("quota") || msg.includes("rate limit") || msg.includes("insufficient")) return true;
+        return false;
+    }
+
+    private applyCooldown(key: string, provider: 'openai' | 'google') {
+        const map = provider === 'openai' ? this.keyUsageOpenAI : this.keyUsageGoogle;
+        map.set(key, { cooldown_until: (Date.now() / 1000) + this.COOLDOWN_SECONDS });
+        Logger.warn(`❄️ Key ...${key.slice(-4)} 冷却 5 分钟.`);
+    }
+
+    private resetCooldown(key: string, provider: 'openai' | 'google') {
+        const map = provider === 'openai' ? this.keyUsageOpenAI : this.keyUsageGoogle;
+        map.delete(key); // 移除记录即代表重置
     }
 }
