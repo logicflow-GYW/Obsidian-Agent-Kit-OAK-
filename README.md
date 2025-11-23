@@ -1,107 +1,121 @@
-
 # Obsidian Agent Kit (OAK)
 
+![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 **OAK (Obsidian Agent Kit)** 是一个为 Obsidian 打造的**企业级 AI 代理开发框架**。
 
-它不仅仅是一个插件，更是一套标准的**生产管线**。它解决了 Obsidian AI 插件开发中最头疼的几个问题：**任务阻塞主线程**、**大数据量导致配置文件膨胀**、以及**缺乏统一的调度机制**。
+它不仅仅是一个插件，更是一套标准的**异步生产管线**。它旨在解决 Obsidian AI 开发中的核心痛点：主线程阻塞、API 稳定性差、以及缺乏统一的插件间通信机制。
 
 ---
 
 ## 🌟 核心特性 (Core Features)
 
-* **🧠 稳健的调度核心 (Orchestrator)**: 基于事件循环的后台任务调度器，支持多 Agent 并行协作。
-* **💾 专业级持久化 (Persistence Layer)**: 
-    * **配置与数据分离**: 彻底告别 `data.json` 膨胀问题。任务队列独立存储，大文本内容自动缓存为文件。
-    * **崩溃恢复**: 即使 Obsidian 意外关闭，未完成的任务也不会丢失，重启后自动断点续传。
-* **🛡️ 容错与重试**: 内置指数退避重试机制，API 抖动不再导致任务失败。
-* **📝 标准化日志 (Logger)**: 提供统一的调试模式与生产环境日志管理，符合插件审核规范。
-* **🔌 多模型支持**: 开箱即用的 OpenAI (兼容 DeepSeek/Moonshot) 与 Google Gemini 支持。
+### 1. 🛡️ 坚如磐石的 LLM 基础设施
+* **零停机设计 (Zero Downtime)**: 内置**自动故障转移**机制。首选 API (如 OpenAI) 响应失败或超时，会自动无缝切换至备用提供商 (如 Google Gemini)。
+* **智能 Key 轮询**: 支持配置多个 API Key。当某个 Key 触发速率限制 (429) 或额度不足时，会自动冷却并切换下一个 Key。
+
+### 2. 🧠 事件驱动调度 (Event-Driven Orchestrator)
+* **非阻塞队列**: 所有的重型 AI 任务都在后台队列中异步处理，绝不卡顿 Obsidian 界面。
+* **持久化与断点续传**: 任务队列独立存储。即使 Obsidian 意外崩溃，重启后 OAK 会自动从断点处继续执行任务。
+* **全局事件总线**: 通过 `EventBus` 广播任务状态，其他插件可实时监听任务完成情况。
+
+### 3. 🔌 开放的 API 生态
+* **同步/异步双模**: 既支持后台长任务 (`dispatch`)，也支持即时对话接口 (`chat`)，供聊天类插件直接调用。
+* **跨插件协作**: 任意 Obsidian 插件均可通过 `app.plugins.plugins['obsidian-agent-kit'].api` 调用 OAK 能力。
 
 ---
 
-## 🚀 快速开始 (用户视角)
+## 🚀 快速开始 (用户模式)
 
-1.  **安装**: 下载插件并启用。
-2.  **配置**: 在设置中填入 API Key，并开启 **Debug Mode** 以查看详细运行日志。
-3.  **使用**: 
-    * 点击侧边栏机器人图标，输入概念（如“熵增定律”），点击“添加到队列”。
-    * OAK 会在后台默默工作，生成完毕后自动将笔记保存到指定目录。
+OAK 内置了一个强大的 **"深度概念生成器"** Agent。
+
+1.  **配置**: 
+    * 进入设置，填入 OpenAI 或 Google Gemini 的 API Key (支持多行填入多个)。
+    * 开启 **Debug Mode** 可在控制台查看详细的调度日志。
+2.  **使用**:
+    * **方式 A**: 点击侧边栏机器人图标 🤖。
+    * **方式 B**: 使用命令面板 `CMD/Ctrl + P` -> `OAK: 添加新概念到生成队列`。
+3.  **输入**: 
+    * 输入一个概念（例如：“第一性原理”或“熵增定律”）。
+    * OAK 会在后台自动根据第一性原理进行深度推导，生成包含 Mermaid 图表与结构化知识的精美笔记。
 
 ---
 
-## 🧑‍💻 开发者指南：构建你的第一个 Agent
+## 🧑‍💻 开发者指南：构建与集成
 
-OAK 的设计哲学是：**"你只管写业务逻辑，剩下的交给框架"**。
+OAK 的设计哲学是：**"你只管写业务逻辑，剩下的（重试、并发、持久化）交给框架"**。
 
-### 第一步：定义任务与 Agent
+### 1. 外部插件调用 (Integration)
 
-创建一个继承自 `BaseAgent` 的类。你无需关心队列怎么存、API 怎么调，只需实现 `process` 方法。
+如果你的插件需要 AI 能力，无需自己实现 HTTP 请求，直接调用 OAK：
 
 ```typescript
-// src/agents/SummarizerAgent.ts
-import { BaseAgent } from "../core/BaseAgent";
-import { Notice } from "obsidian";
+// 获取 OAK API 实例
+const oak = this.app.plugins.plugins['obsidian-agent-kit']?.api;
 
-// 1. 定义任务数据结构
-export interface SummarizeTask {
-    filePath: string;
-    fileContent: string;
-}
+if (oak) {
+    // 场景 1: 简单的即时对话 (同步)
+    const answer = await oak.chat("如何用一句话解释量子纠缠？");
+    console.log(answer);
 
-export class SummarizerAgent extends BaseAgent<SummarizeTask> {
-    // 2. 定义队列名称 (全局唯一)
-    get queueName(): string {
-        return "summarize_queue";
-    }
+    // 场景 2: 派发耗时任务到后台队列 (异步)
+    // 立即返回 taskId，不会阻塞界面
+    const taskId = await oak.dispatch(
+        "generation_queue",      // 目标队列名
+        { concept: "元宇宙" },   // 任务载荷
+        "My-Plugin-ID"           // 来源标识
+    );
 
-    // 3. 实现业务逻辑
-    async process(task: SummarizeTask): Promise<boolean> {
-        this.log(`正在处理文件: ${task.filePath}`); // 使用内置日志工具
-
-        const prompt = `请总结以下内容:\n\n${task.fileContent}`;
-        const summary = await this.llm.chat(prompt);
-
-        if (!summary) return false; // 返回 false 会触发框架的自动重试机制
-
-        // 写入结果
-        const targetFile = this.app.vault.getAbstractFileByPath(task.filePath);
-        if (targetFile) {
-            await this.app.vault.append(targetFile, `\n\n## AI 摘要\n${summary}`);
-            new Notice(`摘要已生成: ${task.filePath}`);
+    // 场景 3: 监听任务完成事件
+    oak.on('oak:task-completed', (task) => {
+        if (task.id === taskId) {
+            new Notice(`你的任务 ${task.concept} 已完成！`);
         }
-        
-        return true; // 任务成功，移出队列
-    }
+    });
 }
 ````
 
-### 第二步：注册 Agent
+### 2\. 开发自定义 Agent (Native Extension)
 
-在 `main.ts` 中注册你的 Agent，OAK 调度器会自动接管它。
-
-```typescript
-// src/main.ts
-import { SummarizerAgent } from "./agents/SummarizerAgent";
-
-// ... 在 onload() 中
-this.orchestrator.registerAgent(new GeneratorAgent(this, this.llm));
-// 注册新 Agent
-this.orchestrator.registerAgent(new SummarizerAgent(this, this.llm)); 
-```
-
-### 第三步：派发任务
-
-在任何地方（Ribbon、Command、甚至另一个 Agent 中）派发任务。
+如果你在基于 OAK 源码开发，只需继承 `BaseAgent`：
 
 ```typescript
-// 将任务丢进队列，立刻返回，不会卡顿界面
-this.orchestrator.addToQueue("summarize_queue", { 
-    filePath: "Notes/Meeting.md",
-    fileContent: "..." 
-});
+import { BaseAgent } from "../core/BaseAgent";
+
+export class SummarizerAgent extends BaseAgent<MyTaskType> {
+    // 定义队列名称 (全局唯一)
+    get queueName(): string { return "summarize_queue"; }
+
+    async process(task: MyTaskType): Promise<boolean> {
+        // 1. 使用内置的高可用 LLM 实例
+        const summary = await this.llm.chat(`总结: ${task.content}`);
+        
+        if (!summary) return false; // 返回 false 会触发框架的自动重试机制
+
+        // 2. 写入文件
+        await this.app.vault.create(task.targetPath, summary);
+        
+        return true; // 任务成功
+    }
+}
 ```
+
+然后并在 `main.ts` 中注册：
+
+```typescript
+this.api.registerAgent(new SummarizerAgent(this, this.llm));
+```
+
+-----
+
+## 📂 项目结构
+
+  * `src/core/Orchestrator.ts`: 调度核心，负责队列循环与任务分发。
+  * `src/core/LLMProvider.ts`: 负责与 AI 模型的通信，包含故障转移与 Key 轮换逻辑。
+  * `src/core/Persistence.ts`: 处理任务队列的存盘与读取。
+  * `src/api.ts`: 定义对外暴露的公共接口。
+  * `prompts/`: 存放版本化的提示词模板。
 
 -----
 
@@ -109,3 +123,5 @@ this.orchestrator.addToQueue("summarize_queue", {
 
 [MIT](https://www.google.com/search?q=LICENSE)
 
+```
+```
