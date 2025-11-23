@@ -38,6 +38,8 @@ export default class AgentKitPlugin extends Plugin {
         return {
             version: this.manifest.version,
             registerAgent: (agent) => this.orchestrator.registerAgent(agent),
+            
+            // 1. 异步任务调度
             dispatch: async (queueName, payload, sourcePluginId) => {
                 // 为外部调用注入来源ID
                 const item = { ...payload, sourcePluginId: sourcePluginId || 'External' };
@@ -46,6 +48,13 @@ export default class AgentKitPlugin extends Plugin {
                 if (!this.orchestrator.isRunning) this.orchestrator.start();
                 return item.id; 
             },
+
+            // 2. [新增] 同步/即时对话接口
+            // 供 Lite Chat 等插件直接调用，跳过队列
+            chat: async (prompt: string) => {
+                return await this.llm.chat(prompt);
+            },
+
             on: (event, cb) => this.eventBus.on(event, cb),
             off: (event, cb) => this.eventBus.off(event, cb)
         };

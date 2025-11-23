@@ -1,12 +1,14 @@
 // src/core/BaseAgent.ts
 import { LLMProvider } from "./LLMProvider";
 import { App } from "obsidian";
-import { OAKSettings, AgentResult } from "./types"; // 引入 AgentResult
+import { OAKSettings } from "./types";
 import { Logger } from "./utils";
 
+// 更新上下文接口
 export interface IAgentPluginContext {
     app: App;
-    settings: OAKSettings;
+    settings: OAKSettings; // 现在直接访问 settings
+    // 移除 data: PluginData，因为数据现在由 Persistence 管理
     orchestrator: {
         addToQueue: (queueName: string, item: any) => Promise<void>;
     };
@@ -22,10 +24,9 @@ export abstract class BaseAgent<T> {
     get app() { return this.plugin.app; }
 
     abstract get queueName(): string;
+    abstract process(item: T): Promise<boolean>;
 
-    // --- 关键修改：允许返回复杂对象 AgentResult ---
-    abstract process(item: T): Promise<boolean | AgentResult>;
-
+    // 提供便捷的日志方法
     protected log(msg: string) {
         Logger.log(`[${this.constructor.name}] ${msg}`);
     }

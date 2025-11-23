@@ -1,6 +1,7 @@
 // src/core/LLMProvider.ts
 import { requestUrl, Notice } from "obsidian";
 import { OAKSettings } from "./types";
+import { Logger } from "./utils";
 
 export class LLMProvider {
     constructor(private getSettings: () => OAKSettings) {}
@@ -17,19 +18,45 @@ export class LLMProvider {
             } else {
                 throw new Error(`未知的提供商: ${provider}`);
             }
-        } catch (error: unknown) { // --- 修改 ---: 使用 unknown 类型
-            // --- 修改 ---: 安全地获取错误信息
+        } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
             console.error("[LLM Error]", error);
-            new Notice(`AI 调用失败: ${msg}`);
+            new Notice(`AI 调用全线失败: ${msg}`);
             return ""; 
         }
     }
 
+    // 辅助：将多行文本解析为 Key 数组
+    private getKeys(keyString: string): string[] {
+        if (!keyString) return [];
+        return keyString.split('\n')
+            .map(k => k.trim())
+            .filter(k => k.length > 0);
+    }
+
     private async callOpenAI(prompt: string): Promise<string> {
         const settings = this.getSettings();
-        if (!settings.openaiApiKey) throw new Error("OpenAI API Key 未配置");
+        const keys = this.getKeys(settings.openaiApiKey);
+        
+        if (keys.length === 0) throw new Error("OpenAI API Key 未配置");
 
+        let lastError: Error | null = null;
+
+        // 轮询尝试所有 Keys
+        for (const apiKey of keys) {
+            try {
+                return await this._requestOpenAI(apiKey, settings, prompt);
+            } catch (error: any) {
+                Logger.warn(`OpenAI Key (...${apiKey.slice(-4)}) failed: ${error.message}. Trying next...`);
+                lastError = error;
+                // 继续下一次循环
+            }
+        }
+        
+        throw lastError || new Error("All OpenAI keys failed.");
+    }
+
+    private async _requestOpenAI(apiKey: string, settings: OAKSettings, prompt: string): Promise<string> {
         const url = `${settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
         
         const response = await requestUrl({
@@ -37,7 +64,7 @@ export class LLMProvider {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${settings.openaiApiKey}`
+                "Authorization": `Bearer ${apiKey}`
             },
             body: JSON.stringify({
                 model: settings.openaiModel,
@@ -55,9 +82,28 @@ export class LLMProvider {
 
     private async callGoogle(prompt: string): Promise<string> {
         const settings = this.getSettings(); 
-        if (!settings.googleApiKey) throw new Error("Google API Key 未配置");
+        const keys = this.getKeys(settings.googleApiKey);
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${settings.googleApiKey}`;
+        if (keys.length === 0) throw new Error("Google API Key 未配置");
+
+        let lastError: Error | null = null;
+
+        // 轮询尝试所有 Keys
+        for (const apiKey of keys) {
+            try {
+                return await this._requestGoogle(apiKey, settings, prompt);
+            } catch (error: any) {
+                Logger.warn(`Google Key (...${apiKey.slice(-4)}) failed: ${error.message}. Trying next...`);
+                lastError = error;
+                // 继续下一次循环
+            }
+        }
+
+        throw lastError || new Error("All Google keys failed.");
+    }
+
+    private async _requestGoogle(apiKey: string, settings: OAKSettings, prompt: string): Promise<string> {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${apiKey}`;
 
         const response = await requestUrl({
             url: url,

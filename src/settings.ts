@@ -1,7 +1,7 @@
 // src/settings.ts
 import { App, PluginSettingTab, Setting } from "obsidian";
 import AgentKitPlugin from "./main";
-import { Logger } from "./core/utils"; // 引入 Logger 以便实时切换调试状态
+import { Logger } from "./core/utils"; 
 
 export class OAKSettingTab extends PluginSettingTab {
     plugin: AgentKitPlugin;
@@ -17,7 +17,7 @@ export class OAKSettingTab extends PluginSettingTab {
             .setName("General")
             .setHeading();
 
-        // 1. Debug Mode (新增)
+        // 1. Debug Mode
         new Setting(containerEl)
             .setName("Debug mode")
             .setDesc("Enable verbose logging in console for troubleshooting.")
@@ -25,7 +25,7 @@ export class OAKSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.debug_mode)
                 .onChange(async (value) => {
                     this.plugin.settings.debug_mode = value;
-                    Logger.setDebugMode(value); // 实时生效
+                    Logger.setDebugMode(value);
                     await this.plugin.saveSettings();
                 }));
 
@@ -39,7 +39,7 @@ export class OAKSettingTab extends PluginSettingTab {
                 .onChange(async v => { 
                     this.plugin.settings.llmProvider = v; 
                     await this.plugin.saveSettings(); 
-                    this.display(); // 刷新面板以显示对应设置
+                    this.display(); 
                 }));
 
         // 3. OpenAI 设置区
@@ -47,13 +47,17 @@ export class OAKSettingTab extends PluginSettingTab {
             new Setting(containerEl).setName("OpenAI").setHeading();
             
             new Setting(containerEl)
-                .setName("API Key")
-                .addText(t => t
-                    .setValue(this.plugin.settings.openaiApiKey)
-                    .onChange(async v => { 
+                .setName("API Keys")
+                .setDesc("支持多 Key 轮换。请每行输入一个 API Key。当第一个失败时，会自动尝试下一个。")
+                .addTextArea(t => {
+                    t.setValue(this.plugin.settings.openaiApiKey)
+                     .onChange(async v => { 
                         this.plugin.settings.openaiApiKey = v; 
                         await this.plugin.saveSettings(); 
-                    }));
+                     });
+                    t.inputEl.rows = 4;
+                    t.inputEl.style.width = "100%";
+                });
             
             new Setting(containerEl)
                 .setName("Base URL")
@@ -79,13 +83,17 @@ export class OAKSettingTab extends PluginSettingTab {
             new Setting(containerEl).setName("Google Gemini").setHeading();
 
             new Setting(containerEl)
-                .setName("API Key")
-                .addText(t => t
-                    .setValue(this.plugin.settings.googleApiKey)
-                    .onChange(async v => { 
+                .setName("API Keys")
+                .setDesc("支持多 Key 轮换。请每行输入一个 API Key。")
+                .addTextArea(t => {
+                    t.setValue(this.plugin.settings.googleApiKey)
+                     .onChange(async v => { 
                         this.plugin.settings.googleApiKey = v; 
                         await this.plugin.saveSettings(); 
-                    }));
+                     });
+                    t.inputEl.rows = 4;
+                    t.inputEl.style.width = "100%";
+                });
             
             new Setting(containerEl)
                 .setName("Model Name")
