@@ -1,4 +1,5 @@
 // src/core/utils.ts
+import { App, normalizePath, TFolder } from "obsidian";
 
 export class Logger {
     private static isDebug: boolean = false;
@@ -23,8 +24,29 @@ export class Logger {
 }
 
 export function sanitizeFilename(name: string): string {
-    // 移除 Obsidian 不允许的字符，并限制长度
     let cleanName = name.replace(/\s*\(.*\)/g, '').trim();
     cleanName = cleanName.replace(/[\\/*?:"<>|]/g, "");
     return cleanName.slice(0, 100);
+}
+
+// 【新增】递归确保文件夹存在
+export async function ensureFolderExists(app: App, folderPath: string): Promise<void> {
+    const normalizedPath = normalizePath(folderPath);
+    const folders = normalizedPath.split("/");
+    let currentPath = "";
+
+    for (const folder of folders) {
+        currentPath = currentPath === "" ? folder : `${currentPath}/${folder}`;
+        const existing = app.vault.getAbstractFileByPath(currentPath);
+        
+        if (!existing) {
+            try {
+                await app.vault.createFolder(currentPath);
+            } catch (error) {
+                // 忽略并发创建时的错误
+            }
+        } else if (!(existing instanceof TFolder)) {
+            throw new Error(`Path conflict: ${currentPath} exists but is not a folder.`);
+        }
+    }
 }

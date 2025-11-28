@@ -1,9 +1,10 @@
 // src/core/Orchestrator.ts
 import { Notice } from "obsidian";
 import { BaseAgent } from "./BaseAgent";
-import { TaskItem, QueueData } from "./types";
+import { TaskItem } from "./types";
 import AgentKitPlugin from "../main";
 import { Logger } from "./utils";
+import { AllModelsFailedError } from "./LLMProvider"; // 【新增】引入错误类型
 
 export class Orchestrator {
     private _isRunning = false;
@@ -20,7 +21,6 @@ export class Orchestrator {
 
     registerAgent(agent: BaseAgent<any>) {
         this.agents.push(agent);
-        // 确保队列初始化
         if (!this.plugin.queueData[agent.queueName]) {
             this.plugin.queueData[agent.queueName] = [];
         }
@@ -31,14 +31,10 @@ export class Orchestrator {
         if (!this.plugin.queueData[queueName]) {
             this.plugin.queueData[queueName] = [];
         }
-        
-        // 赋予默认属性
         item.retries = 0;
-        if (!item.id) item.id = Date.now().toString(); // 简单的 ID 生成
-
+        if (!item.id) item.id = Date.now().toString(); 
         this.plugin.queueData[queueName].push(item);
         
-        // 通过 Persistence 保存
         await this.plugin.persistence.saveQueueData(this.plugin.queueData);
         Logger.log(`Task added to ${queueName}`);
     }
@@ -77,11 +73,21 @@ export class Orchestrator {
                     
                     if (success) {
                         queue.shift(); // 移除成功任务
+                        // 【新增】任务完成，立即清理缓存文件！
+                        await this.plugin.persistence.deleteTaskCache(item.id!); 
                         workDone = true;
                     } else {
                         throw new Error("Agent process returned false.");
                     }
                 } catch (error) {
+                    // 【新增】致命错误检测
+                    if (error instanceof AllModelsFailedError) {
+                         Logger.error(`🛑 Engine paused due to fatal error: ${error.message}`);
+                         new Notice(`引擎紧急暂停: 所有 API Key 均不可用。请检查设置。`);
+                         this.stop();
+                         return; // 立即退出 Loop
+                    }
+
                     Logger.error(`Agent ${agent.constructor.name} failed:`, error);
                     workDone = true;
                     
@@ -91,16 +97,16 @@ export class Orchestrator {
                         
                         const maxRetries = this.plugin.settings.maxRetries || 3;
                         if (failedItem.retries < maxRetries) {
-                            queue.push(failedItem); // 重新入队到末尾
+                            queue.push(failedItem); // 重试：放回队尾
                             Logger.warn(`Task retrying (${failedItem.retries}/${maxRetries})`);
                         } else {
                             Logger.error(`Task max retries reached. Discarding.`);
-                            new Notice(`任务已达最大重试次数，已被放弃。`);
-                            // 这里可以考虑加一个 "discarded" 队列，就像 KGG 那样
+                            new Notice(`任务 ${failedItem.id} 已达最大重试次数，已被丢弃。`);
+                            // 【新增】任务彻底失败，清理缓存文件！
+                            await this.plugin.persistence.deleteTaskCache(failedItem.id!);
                         }
                     }
                 } finally {
-                    // 每次任务处理完（无论成功失败），保存队列状态
                     await this.plugin.persistence.saveQueueData(this.plugin.queueData);
                 }
             }
