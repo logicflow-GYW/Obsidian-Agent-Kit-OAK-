@@ -1,9 +1,8 @@
 // src/core/LLMProvider.ts
-import { requestUrl, Notice } from "obsidian";
+import { requestUrl, Notice, RequestUrlParam } from "obsidian";
 import { OAKSettings } from "./types";
 import { Logger } from "./utils";
 
-// 【新增】致命错误类
 export class AllModelsFailedError extends Error {
     constructor(message: string) {
         super(message);
@@ -19,6 +18,12 @@ export class LLMProvider {
     private keyUsageOpenAI = new Map<string, KeyUsageStatus>();
     private keyUsageGoogle = new Map<string, KeyUsageStatus>();
     private readonly COOLDOWN_SECONDS = 300; 
+    
+    // 【新增】默认超时 90 秒
+    private readonly REQUEST_TIMEOUT_MS = 90000;
+
+    private openAIKeyIndex = 0;
+    private googleKeyIndex = 0;
 
     constructor(private getSettings: () => OAKSettings) {}
 
@@ -36,7 +41,6 @@ export class LLMProvider {
             const msg = error instanceof Error ? error.message : String(error);
             Logger.error("[LLM Fatal Error]", error);
             
-            // 如果是致命错误，向上抛出，让 Orchestrator 暂停引擎
             if (error instanceof AllModelsFailedError) {
                 throw error; 
             }
@@ -44,6 +48,25 @@ export class LLMProvider {
             new Notice(`AI 响应失败: ${msg}`);
             return ""; 
         }
+    }
+
+    // 【新增】带超时的请求包装器
+    private async _requestWithTimeout(requestParams: RequestUrlParam): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error(`API Request timed out after ${this.REQUEST_TIMEOUT_MS / 1000}s`));
+            }, this.REQUEST_TIMEOUT_MS);
+
+            requestUrl(requestParams)
+                .then(response => {
+                    clearTimeout(timer);
+                    resolve(response);
+                })
+                .catch(err => {
+                    clearTimeout(timer);
+                    reject(err);
+                });
+        });
     }
 
     private async tryOpenAIFirst(prompt: string): Promise<string> {
@@ -55,7 +78,6 @@ export class LLMProvider {
                 new Notice("OpenAI 暂时不可用，正在切换至 Google...");
                 return await this.callGoogle(prompt);
             }
-            // 【修改】如果没备用，抛出致命错误
             throw new AllModelsFailedError("OpenAI failed and no Google keys available.");
         }
     }
@@ -69,14 +91,13 @@ export class LLMProvider {
                 new Notice("Google 暂时不可用，正在切换至 OpenAI...");
                 return await this.callOpenAI(prompt);
             }
-            // 【修改】如果没备用，抛出致命错误
             throw new AllModelsFailedError("Google failed and no OpenAI keys available.");
         }
     }
 
     private async callOpenAI(prompt: string): Promise<string> {
         const settings = this.getSettings();
-        const keys = this.getAvailableKeys(settings.openaiApiKey, "openai");
+        const keys = this.getPrioritizedKeys(settings.openaiApiKey, "openai");
         
         if (keys.length === 0) throw new AllModelsFailedError("OpenAI API Keys exhausted or not configured.");
 
@@ -87,6 +108,7 @@ export class LLMProvider {
                 Logger.log(`Trying OpenAI Key: ...${apiKey.slice(-4)}`);
                 const result = await this._requestOpenAI(apiKey, settings, prompt);
                 this.resetCooldown(apiKey, "openai");
+                this.updateKeyIndexAfterSuccess(apiKey, settings.openaiApiKey, "openai");
                 return result;
             } catch (error: any) {
                 Logger.warn(`OpenAI Key ...${apiKey.slice(-4)} failed: ${error.message}`);
@@ -101,7 +123,7 @@ export class LLMProvider {
 
     private async callGoogle(prompt: string): Promise<string> {
         const settings = this.getSettings(); 
-        const keys = this.getAvailableKeys(settings.googleApiKey, "google");
+        const keys = this.getPrioritizedKeys(settings.googleApiKey, "google");
 
         if (keys.length === 0) throw new AllModelsFailedError("Google API Keys exhausted or not configured.");
 
@@ -112,6 +134,7 @@ export class LLMProvider {
                 Logger.log(`Trying Google Key: ...${apiKey.slice(-4)}`);
                 const result = await this._requestGoogle(apiKey, settings, prompt);
                 this.resetCooldown(apiKey, "google");
+                this.updateKeyIndexAfterSuccess(apiKey, settings.googleApiKey, "google");
                 return result;
             } catch (error: any) {
                 Logger.warn(`Google Key ...${apiKey.slice(-4)} failed: ${error.message}`);
@@ -126,7 +149,8 @@ export class LLMProvider {
 
     private async _requestOpenAI(apiKey: string, settings: OAKSettings, prompt: string): Promise<string> {
         const url = `${settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
-        const response = await requestUrl({
+        // 使用带超时的请求
+        const response = await this._requestWithTimeout({
             url: url,
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
@@ -143,7 +167,8 @@ export class LLMProvider {
 
     private async _requestGoogle(apiKey: string, settings: OAKSettings, prompt: string): Promise<string> {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${apiKey}`;
-        const response = await requestUrl({
+        // 使用带超时的请求
+        const response = await this._requestWithTimeout({
             url: url,
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -162,15 +187,47 @@ export class LLMProvider {
         return keyString.split('\n').map(k => k.trim()).filter(k => k.length > 0);
     }
 
-    private getAvailableKeys(keyString: string, provider: 'openai' | 'google'): string[] {
+    private getPrioritizedKeys(keyString: string, provider: 'openai' | 'google'): string[] {
         const allKeys = this.getKeys(keyString);
+        if (allKeys.length === 0) return [];
+
+        const strategy = this.getSettings().apiKeyStrategy;
+        let orderedKeys = [...allKeys];
+
+        if (strategy === 'round-robin') {
+            const currentIndex = provider === 'openai' ? this.openAIKeyIndex : this.googleKeyIndex;
+            const safeIndex = currentIndex % allKeys.length;
+            orderedKeys = [
+                ...allKeys.slice(safeIndex),
+                ...allKeys.slice(0, safeIndex)
+            ];
+        }
+
         const map = provider === 'openai' ? this.keyUsageOpenAI : this.keyUsageGoogle;
         const now = Date.now() / 1000;
-        return allKeys.filter(key => {
+        
+        return orderedKeys.filter(key => {
             const usage = map.get(key);
             if (!usage) return true;
             return now >= usage.cooldown_until;
         });
+    }
+
+    private updateKeyIndexAfterSuccess(usedKey: string, keyString: string, provider: 'openai' | 'google') {
+        if (this.getSettings().apiKeyStrategy !== 'round-robin') return;
+
+        const allKeys = this.getKeys(keyString);
+        const index = allKeys.indexOf(usedKey);
+        
+        if (index !== -1) {
+            const nextIndex = (index + 1) % allKeys.length;
+            if (provider === 'openai') {
+                this.openAIKeyIndex = nextIndex;
+            } else {
+                this.googleKeyIndex = nextIndex;
+            }
+            Logger.log(`[Round-Robin] Strategy rotated. Next start index for ${provider}: ${nextIndex}`);
+        }
     }
 
     private isQuotaError(error: any): boolean {

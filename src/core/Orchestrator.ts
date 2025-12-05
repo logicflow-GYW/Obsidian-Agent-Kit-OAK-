@@ -4,12 +4,17 @@ import { BaseAgent } from "./BaseAgent";
 import { TaskItem } from "./types";
 import AgentKitPlugin from "../main";
 import { Logger } from "./utils";
-import { AllModelsFailedError } from "./LLMProvider"; // 【新增】引入错误类型
+import { AllModelsFailedError } from "./LLMProvider";
 
 export class Orchestrator {
     private _isRunning = false;
     private agents: BaseAgent<any>[] = [];
     private plugin: AgentKitPlugin;
+
+    // 【新增】并发控制：记录正在进行的任务 ID 和开始时间
+    private activeTasks = new Map<string, number>(); 
+    // 【新增】僵尸任务超时时间 (5分钟)
+    private readonly TASK_TIMEOUT_MS = 5 * 60 * 1000; 
 
     public get isRunning(): boolean {
         return this._isRunning;
@@ -32,11 +37,11 @@ export class Orchestrator {
             this.plugin.queueData[queueName] = [];
         }
         item.retries = 0;
-        if (!item.id) item.id = Date.now().toString(); 
+        if (!item.id) item.id = Date.now().toString() + "-" + Math.random().toString(36).substr(2, 9);
         this.plugin.queueData[queueName].push(item);
         
         await this.plugin.persistence.saveQueueData(this.plugin.queueData);
-        Logger.log(`Task added to ${queueName}`);
+        Logger.log(`Task added to ${queueName}: ${item.id}`);
     }
 
     start() {
@@ -53,70 +58,124 @@ export class Orchestrator {
         Logger.log("Engine stopped");
     }
 
+    // 【新增】清理僵尸任务
+    private cleanupZombieTasks() {
+        const now = Date.now();
+        for (const [taskId, startTime] of this.activeTasks.entries()) {
+            if (now - startTime > this.TASK_TIMEOUT_MS) {
+                Logger.warn(`🧹 [Zombie Sweeper] Removing stuck task '${taskId}' after ${this.TASK_TIMEOUT_MS/1000}s`);
+                this.activeTasks.delete(taskId);
+                // 这里我们仅释放槽位。
+                // 因为任务还在 'activeTasks' 也就意味着它不在 'queueData' 里了，
+                // 视为失败处理。如果需要重试，可以在这里补逻辑，但通常防止死循环更重要。
+            }
+        }
+    }
+
+    // 【重构】主循环：不再阻塞等待，而是负责调度
     private async loop() {
         if (!this._isRunning) return;
 
-        let workDone = false;
+        // 1. 清理僵尸任务
+        this.cleanupZombieTasks();
 
-        for (const agent of this.agents) {
-            if (!this._isRunning) break;
+        // 2. 获取最大并发设置
+        const maxConcurrency = this.plugin.settings.concurrency || 3;
+        
+        // 3. 填充并发槽位
+        let slotsAvailable = maxConcurrency - this.activeTasks.size;
 
-            const queueName = agent.queueName;
-            const queue = this.plugin.queueData[queueName];
+        if (slotsAvailable > 0) {
+            // 遍历所有 Agents 寻找待处理任务
+            for (const agent of this.agents) {
+                if (slotsAvailable <= 0 || !this._isRunning) break;
 
-            if (queue && queue.length > 0) {
-                const item = queue[0]; 
-                
-                try {
-                    Logger.log(`Processing task in ${queueName}...`);
-                    const success = await agent.process(item);
-                    
-                    if (success) {
-                        queue.shift(); // 移除成功任务
-                        // 【新增】任务完成，立即清理缓存文件！
-                        await this.plugin.persistence.deleteTaskCache(item.id!); 
-                        workDone = true;
-                    } else {
-                        throw new Error("Agent process returned false.");
-                    }
-                } catch (error) {
-                    // 【新增】致命错误检测
-                    if (error instanceof AllModelsFailedError) {
-                         Logger.error(`🛑 Engine paused due to fatal error: ${error.message}`);
-                         new Notice(`引擎紧急暂停: 所有 API Key 均不可用。请检查设置。`);
-                         this.stop();
-                         return; // 立即退出 Loop
-                    }
+                const queueName = agent.queueName;
+                const queue = this.plugin.queueData[queueName];
 
-                    Logger.error(`Agent ${agent.constructor.name} failed:`, error);
-                    workDone = true;
-                    
-                    const failedItem = queue.shift();
-                    if (failedItem) {
-                        failedItem.retries = (failedItem.retries || 0) + 1;
+                if (queue && queue.length > 0) {
+                    // 取出任务 (Dequeue)
+                    const item = queue.shift();
+                    if (item && item.id) {
+                        slotsAvailable--;
                         
-                        const maxRetries = this.plugin.settings.maxRetries || 3;
-                        if (failedItem.retries < maxRetries) {
-                            queue.push(failedItem); // 重试：放回队尾
-                            Logger.warn(`Task retrying (${failedItem.retries}/${maxRetries})`);
-                        } else {
-                            Logger.error(`Task max retries reached. Discarding.`);
-                            new Notice(`任务 ${failedItem.id} 已达最大重试次数，已被丢弃。`);
-                            // 【新增】任务彻底失败，清理缓存文件！
-                            await this.plugin.persistence.deleteTaskCache(failedItem.id!);
-                        }
+                        // 标记为活跃
+                        this.activeTasks.set(item.id, Date.now());
+                        
+                        // 保存队列状态 (防止崩溃丢失进度)
+                        await this.plugin.persistence.saveQueueData(this.plugin.queueData);
+
+                        // 【关键】异步执行，不 await
+                        this.processTask(agent, item).catch(err => {
+                            Logger.error(`Unhandled error in processTask for ${item.id}`, err);
+                            this.activeTasks.delete(item.id!); // 确保兜底释放
+                        });
                     }
-                } finally {
-                    await this.plugin.persistence.saveQueueData(this.plugin.queueData);
                 }
             }
         }
 
-        const delay = workDone ? 100 : 2000; 
+        // 4. 调度下一次循环
+        // 由于是滑动窗口，我们可以设置较短的间隔来快速响应空槽
+        const delay = this.activeTasks.size > 0 ? 500 : 2000;
+        
         if (this._isRunning) {
             setTimeout(() => {
                 this.loop().catch(err => Logger.error("Loop timeout error:", err));
             }, delay);
+        }
+    }
+
+    // 【新增】独立的任务处理函数
+    private async processTask(agent: BaseAgent<any>, item: TaskItem) {
+        if (!item.id) return; // Should not happen
+
+        try {
+            Logger.log(`Processing task ${item.id} in ${agent.queueName}...`);
+            const success = await agent.process(item);
+            
+            if (success) {
+                // 成功：清理缓存
+                await this.plugin.persistence.deleteTaskCache(item.id); 
+                Logger.log(`✅ Task ${item.id} completed.`);
+            } else {
+                throw new Error("Agent process returned false.");
+            }
+        } catch (error) {
+            // 致命错误检测
+            if (error instanceof AllModelsFailedError) {
+                 Logger.error(`🛑 Engine paused due to fatal error: ${error.message}`);
+                 new Notice(`引擎紧急暂停: 所有 API Key 均不可用。`);
+                 this.stop();
+                 this.activeTasks.delete(item.id); // 释放当前任务
+                 return;
+            }
+
+            Logger.error(`Agent ${agent.constructor.name} failed task ${item.id}:`, error);
+            
+            // 失败重试逻辑
+            item.retries = (item.retries || 0) + 1;
+            const maxRetries = this.plugin.settings.maxRetries || 3;
+            
+            if (item.retries < maxRetries) {
+                Logger.warn(`Task ${item.id} retrying (${item.retries}/${maxRetries})`);
+                // 放回队列末尾
+                if (!this.plugin.queueData[agent.queueName]) {
+                    this.plugin.queueData[agent.queueName] = [];
+                }
+                this.plugin.queueData[agent.queueName].push(item);
+            } else {
+                Logger.error(`Task ${item.id} max retries reached. Discarding.`);
+                new Notice(`任务 ${item.id} 已达最大重试次数，已被丢弃。`);
+                await this.plugin.persistence.deleteTaskCache(item.id);
+            }
+            
+            // 保存队列变更
+            await this.plugin.persistence.saveQueueData(this.plugin.queueData);
+
+        } finally {
+            // 【关键】无论成功失败，必须释放槽位
+            this.activeTasks.delete(item.id);
         }
     }
 }

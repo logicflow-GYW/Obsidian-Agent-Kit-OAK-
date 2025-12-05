@@ -13,6 +13,7 @@ import { EventBus } from "./core/EventBus"; // 引入 EventBus
 
 const DEFAULT_SETTINGS: OAKSettings = {
     llmProvider: "openai",
+    apiKeyStrategy: "exhaustion", // 【新增】默认使用耗尽模式
     openaiApiKey: "",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiModel: "gpt-3.5-turbo",

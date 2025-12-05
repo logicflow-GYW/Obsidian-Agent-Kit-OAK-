@@ -17,7 +17,7 @@ export class OAKSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("Debug mode")
-            .setDesc("在控制台显示详细日志 (推荐开启以观察故障切换)")
+            .setDesc("在控制台显示详细日志")
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.debug_mode)
                 .onChange(async (value) => {
@@ -26,9 +26,10 @@ export class OAKSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // ... (Provider 设置保持不变) ...
         new Setting(containerEl)
             .setName("Primary Provider")
-            .setDesc("首选 AI 提供商。当其所有 Key 均不可用时，会自动尝试另一个。")
+            .setDesc("首选 AI 提供商。")
             .addDropdown(d => d
                 .addOption("openai", "OpenAI")
                 .addOption("google", "Google")
@@ -39,10 +40,22 @@ export class OAKSettingTab extends PluginSettingTab {
                     this.display(); 
                 }));
 
+        new Setting(containerEl)
+            .setName("API Key Strategy")
+            .setDesc("选择 API Key 的轮换方式。")
+            .addDropdown(d => d
+                .addOption("exhaustion", "顺序耗尽 (Exhaustion)")
+                .addOption("round-robin", "轮询均衡 (Round-Robin)")
+                .setValue(this.plugin.settings.apiKeyStrategy)
+                .onChange(async v => {
+                    this.plugin.settings.apiKeyStrategy = v as 'exhaustion' | 'round-robin';
+                    await this.plugin.saveSettings();
+                }));
+
         if (this.plugin.settings.llmProvider === "openai") {
             new Setting(containerEl).setName("OpenAI Settings").setHeading();
             this.addOpenAISettings(containerEl);
-            this.addGoogleSettings(containerEl); // 即使选了 OpenAI，也显示 Google 以便配置备用
+            this.addGoogleSettings(containerEl); 
         } else {
             new Setting(containerEl).setName("Google Settings").setHeading();
             this.addGoogleSettings(containerEl);
@@ -50,7 +63,20 @@ export class OAKSettingTab extends PluginSettingTab {
         }
 
         new Setting(containerEl).setName("Engine Settings").setHeading();
-        // ... 其他设置保持不变，为节省篇幅省略 ...
+        
+        // 【新增】并发数设置
+        new Setting(containerEl)
+            .setName("Max Concurrency")
+            .setDesc("同时处理的任务数量 (滑动窗口大小)。建议设置为 3-5。")
+            .addSlider(slider => slider
+                .setLimits(1, 10, 1)
+                .setValue(this.plugin.settings.concurrency || 3)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.concurrency = value;
+                    await this.plugin.saveSettings();
+                }));
+
         new Setting(containerEl).setName("Output Folder").addText(t => t.setValue(this.plugin.settings.output_dir).onChange(async v => { this.plugin.settings.output_dir = v; await this.plugin.saveSettings(); }));
         new Setting(containerEl).setName("Max Retries").addText(t => t.setValue(String(this.plugin.settings.maxRetries)).onChange(async v => { this.plugin.settings.maxRetries = parseInt(v); await this.plugin.saveSettings(); }));
         new Setting(containerEl).setName("Prompt Template").addTextArea(t => { t.setValue(this.plugin.settings.prompt_generator).onChange(async v => { this.plugin.settings.prompt_generator = v; await this.plugin.saveSettings(); }); t.inputEl.rows=5; t.inputEl.style.width="100%"; });
@@ -59,7 +85,7 @@ export class OAKSettingTab extends PluginSettingTab {
     addOpenAISettings(el: HTMLElement) {
         new Setting(el)
             .setName("OpenAI Keys")
-            .setDesc("一行一个 Key。支持自动轮换和冷却。")
+            .setDesc("一行一个 Key。")
             .addTextArea(t => {
                 t.setValue(this.plugin.settings.openaiApiKey)
                  .onChange(async v => { this.plugin.settings.openaiApiKey = v; await this.plugin.saveSettings(); });

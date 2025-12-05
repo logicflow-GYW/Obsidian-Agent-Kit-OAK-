@@ -84,6 +84,10 @@ var LLMProvider = class {
     this.keyUsageOpenAI = /* @__PURE__ */ new Map();
     this.keyUsageGoogle = /* @__PURE__ */ new Map();
     this.COOLDOWN_SECONDS = 300;
+    // 【新增】默认超时 90 秒
+    this.REQUEST_TIMEOUT_MS = 9e4;
+    this.openAIKeyIndex = 0;
+    this.googleKeyIndex = 0;
   }
   async chat(prompt) {
     const settings = this.getSettings();
@@ -103,6 +107,21 @@ var LLMProvider = class {
       new import_obsidian2.Notice(`AI 响应失败: ${msg}`);
       return "";
     }
+  }
+  // 【新增】带超时的请求包装器
+  async _requestWithTimeout(requestParams) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`API Request timed out after ${this.REQUEST_TIMEOUT_MS / 1e3}s`));
+      }, this.REQUEST_TIMEOUT_MS);
+      (0, import_obsidian2.requestUrl)(requestParams).then((response) => {
+        clearTimeout(timer);
+        resolve(response);
+      }).catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
   }
   async tryOpenAIFirst(prompt) {
     try {
@@ -130,7 +149,7 @@ var LLMProvider = class {
   }
   async callOpenAI(prompt) {
     const settings = this.getSettings();
-    const keys = this.getAvailableKeys(settings.openaiApiKey, "openai");
+    const keys = this.getPrioritizedKeys(settings.openaiApiKey, "openai");
     if (keys.length === 0)
       throw new AllModelsFailedError("OpenAI API Keys exhausted or not configured.");
     let lastError = null;
@@ -139,6 +158,7 @@ var LLMProvider = class {
         Logger.log(`Trying OpenAI Key: ...${apiKey.slice(-4)}`);
         const result = await this._requestOpenAI(apiKey, settings, prompt);
         this.resetCooldown(apiKey, "openai");
+        this.updateKeyIndexAfterSuccess(apiKey, settings.openaiApiKey, "openai");
         return result;
       } catch (error) {
         Logger.warn(`OpenAI Key ...${apiKey.slice(-4)} failed: ${error.message}`);
@@ -152,7 +172,7 @@ var LLMProvider = class {
   }
   async callGoogle(prompt) {
     const settings = this.getSettings();
-    const keys = this.getAvailableKeys(settings.googleApiKey, "google");
+    const keys = this.getPrioritizedKeys(settings.googleApiKey, "google");
     if (keys.length === 0)
       throw new AllModelsFailedError("Google API Keys exhausted or not configured.");
     let lastError = null;
@@ -161,6 +181,7 @@ var LLMProvider = class {
         Logger.log(`Trying Google Key: ...${apiKey.slice(-4)}`);
         const result = await this._requestGoogle(apiKey, settings, prompt);
         this.resetCooldown(apiKey, "google");
+        this.updateKeyIndexAfterSuccess(apiKey, settings.googleApiKey, "google");
         return result;
       } catch (error) {
         Logger.warn(`Google Key ...${apiKey.slice(-4)} failed: ${error.message}`);
@@ -174,7 +195,7 @@ var LLMProvider = class {
   }
   async _requestOpenAI(apiKey, settings, prompt) {
     const url = `${settings.openaiBaseUrl.replace(/\/$/, "")}/chat/completions`;
-    const response = await (0, import_obsidian2.requestUrl)({
+    const response = await this._requestWithTimeout({
       url,
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
@@ -190,7 +211,7 @@ var LLMProvider = class {
   }
   async _requestGoogle(apiKey, settings, prompt) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.googleModel}:generateContent?key=${apiKey}`;
-    const response = await (0, import_obsidian2.requestUrl)({
+    const response = await this._requestWithTimeout({
       url,
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -208,16 +229,43 @@ var LLMProvider = class {
       return [];
     return keyString.split("\n").map((k) => k.trim()).filter((k) => k.length > 0);
   }
-  getAvailableKeys(keyString, provider) {
+  getPrioritizedKeys(keyString, provider) {
     const allKeys = this.getKeys(keyString);
+    if (allKeys.length === 0)
+      return [];
+    const strategy = this.getSettings().apiKeyStrategy;
+    let orderedKeys = [...allKeys];
+    if (strategy === "round-robin") {
+      const currentIndex = provider === "openai" ? this.openAIKeyIndex : this.googleKeyIndex;
+      const safeIndex = currentIndex % allKeys.length;
+      orderedKeys = [
+        ...allKeys.slice(safeIndex),
+        ...allKeys.slice(0, safeIndex)
+      ];
+    }
     const map = provider === "openai" ? this.keyUsageOpenAI : this.keyUsageGoogle;
     const now = Date.now() / 1e3;
-    return allKeys.filter((key) => {
+    return orderedKeys.filter((key) => {
       const usage = map.get(key);
       if (!usage)
         return true;
       return now >= usage.cooldown_until;
     });
+  }
+  updateKeyIndexAfterSuccess(usedKey, keyString, provider) {
+    if (this.getSettings().apiKeyStrategy !== "round-robin")
+      return;
+    const allKeys = this.getKeys(keyString);
+    const index = allKeys.indexOf(usedKey);
+    if (index !== -1) {
+      const nextIndex = (index + 1) % allKeys.length;
+      if (provider === "openai") {
+        this.openAIKeyIndex = nextIndex;
+      } else {
+        this.googleKeyIndex = nextIndex;
+      }
+      Logger.log(`[Round-Robin] Strategy rotated. Next start index for ${provider}: ${nextIndex}`);
+    }
   }
   isQuotaError(error) {
     const msg = (error.message || "").toLowerCase();
@@ -243,6 +291,10 @@ var Orchestrator = class {
   constructor(plugin) {
     this._isRunning = false;
     this.agents = [];
+    // 【新增】并发控制：记录正在进行的任务 ID 和开始时间
+    this.activeTasks = /* @__PURE__ */ new Map();
+    // 【新增】僵尸任务超时时间 (5分钟)
+    this.TASK_TIMEOUT_MS = 5 * 60 * 1e3;
     this.plugin = plugin;
   }
   get isRunning() {
@@ -261,10 +313,10 @@ var Orchestrator = class {
     }
     item.retries = 0;
     if (!item.id)
-      item.id = Date.now().toString();
+      item.id = Date.now().toString() + "-" + Math.random().toString(36).substr(2, 9);
     this.plugin.queueData[queueName].push(item);
     await this.plugin.persistence.saveQueueData(this.plugin.queueData);
-    Logger.log(`Task added to ${queueName}`);
+    Logger.log(`Task added to ${queueName}: ${item.id}`);
   }
   start() {
     if (this._isRunning)
@@ -279,59 +331,88 @@ var Orchestrator = class {
     new import_obsidian3.Notice("🛑 OAK 引擎已停止");
     Logger.log("Engine stopped");
   }
+  // 【新增】清理僵尸任务
+  cleanupZombieTasks() {
+    const now = Date.now();
+    for (const [taskId, startTime] of this.activeTasks.entries()) {
+      if (now - startTime > this.TASK_TIMEOUT_MS) {
+        Logger.warn(`🧹 [Zombie Sweeper] Removing stuck task '${taskId}' after ${this.TASK_TIMEOUT_MS / 1e3}s`);
+        this.activeTasks.delete(taskId);
+      }
+    }
+  }
+  // 【重构】主循环：不再阻塞等待，而是负责调度
   async loop() {
     if (!this._isRunning)
       return;
-    let workDone = false;
-    for (const agent of this.agents) {
-      if (!this._isRunning)
-        break;
-      const queueName = agent.queueName;
-      const queue = this.plugin.queueData[queueName];
-      if (queue && queue.length > 0) {
-        const item = queue[0];
-        try {
-          Logger.log(`Processing task in ${queueName}...`);
-          const success = await agent.process(item);
-          if (success) {
-            queue.shift();
-            await this.plugin.persistence.deleteTaskCache(item.id);
-            workDone = true;
-          } else {
-            throw new Error("Agent process returned false.");
+    this.cleanupZombieTasks();
+    const maxConcurrency = this.plugin.settings.concurrency || 3;
+    let slotsAvailable = maxConcurrency - this.activeTasks.size;
+    if (slotsAvailable > 0) {
+      for (const agent of this.agents) {
+        if (slotsAvailable <= 0 || !this._isRunning)
+          break;
+        const queueName = agent.queueName;
+        const queue = this.plugin.queueData[queueName];
+        if (queue && queue.length > 0) {
+          const item = queue.shift();
+          if (item && item.id) {
+            slotsAvailable--;
+            this.activeTasks.set(item.id, Date.now());
+            await this.plugin.persistence.saveQueueData(this.plugin.queueData);
+            this.processTask(agent, item).catch((err) => {
+              Logger.error(`Unhandled error in processTask for ${item.id}`, err);
+              this.activeTasks.delete(item.id);
+            });
           }
-        } catch (error) {
-          if (error instanceof AllModelsFailedError) {
-            Logger.error(`🛑 Engine paused due to fatal error: ${error.message}`);
-            new import_obsidian3.Notice(`引擎紧急暂停: 所有 API Key 均不可用。请检查设置。`);
-            this.stop();
-            return;
-          }
-          Logger.error(`Agent ${agent.constructor.name} failed:`, error);
-          workDone = true;
-          const failedItem = queue.shift();
-          if (failedItem) {
-            failedItem.retries = (failedItem.retries || 0) + 1;
-            const maxRetries = this.plugin.settings.maxRetries || 3;
-            if (failedItem.retries < maxRetries) {
-              queue.push(failedItem);
-              Logger.warn(`Task retrying (${failedItem.retries}/${maxRetries})`);
-            } else {
-              Logger.error(`Task max retries reached. Discarding.`);
-              new import_obsidian3.Notice(`任务 ${failedItem.id} 已达最大重试次数，已被丢弃。`);
-              await this.plugin.persistence.deleteTaskCache(failedItem.id);
-            }
-          }
-        } finally {
-          await this.plugin.persistence.saveQueueData(this.plugin.queueData);
         }
       }
     }
-    const delay = workDone ? 100 : 2e3;
+    const delay = this.activeTasks.size > 0 ? 500 : 2e3;
     if (this._isRunning) {
       setTimeout(() => {
         this.loop().catch((err) => Logger.error("Loop timeout error:", err));
       }, delay);
+    }
+  }
+  // 【新增】独立的任务处理函数
+  async processTask(agent, item) {
+    if (!item.id)
+      return;
+    try {
+      Logger.log(`Processing task ${item.id} in ${agent.queueName}...`);
+      const success = await agent.process(item);
+      if (success) {
+        await this.plugin.persistence.deleteTaskCache(item.id);
+        Logger.log(`✅ Task ${item.id} completed.`);
+      } else {
+        throw new Error("Agent process returned false.");
+      }
+    } catch (error) {
+      if (error instanceof AllModelsFailedError) {
+        Logger.error(`🛑 Engine paused due to fatal error: ${error.message}`);
+        new import_obsidian3.Notice(`引擎紧急暂停: 所有 API Key 均不可用。`);
+        this.stop();
+        this.activeTasks.delete(item.id);
+        return;
+      }
+      Logger.error(`Agent ${agent.constructor.name} failed task ${item.id}:`, error);
+      item.retries = (item.retries || 0) + 1;
+      const maxRetries = this.plugin.settings.maxRetries || 3;
+      if (item.retries < maxRetries) {
+        Logger.warn(`Task ${item.id} retrying (${item.retries}/${maxRetries})`);
+        if (!this.plugin.queueData[agent.queueName]) {
+          this.plugin.queueData[agent.queueName] = [];
+        }
+        this.plugin.queueData[agent.queueName].push(item);
+      } else {
+        Logger.error(`Task ${item.id} max retries reached. Discarding.`);
+        new import_obsidian3.Notice(`任务 ${item.id} 已达最大重试次数，已被丢弃。`);
+        await this.plugin.persistence.deleteTaskCache(item.id);
+      }
+      await this.plugin.persistence.saveQueueData(this.plugin.queueData);
+    } finally {
+      this.activeTasks.delete(item.id);
     }
   }
 };
@@ -479,15 +560,19 @@ var OAKSettingTab = class extends import_obsidian5.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian5.Setting(containerEl).setName("General").setHeading();
-    new import_obsidian5.Setting(containerEl).setName("Debug mode").setDesc("在控制台显示详细日志 (推荐开启以观察故障切换)").addToggle((toggle) => toggle.setValue(this.plugin.settings.debug_mode).onChange(async (value) => {
+    new import_obsidian5.Setting(containerEl).setName("Debug mode").setDesc("在控制台显示详细日志").addToggle((toggle) => toggle.setValue(this.plugin.settings.debug_mode).onChange(async (value) => {
       this.plugin.settings.debug_mode = value;
       Logger.setDebugMode(value);
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Primary Provider").setDesc("首选 AI 提供商。当其所有 Key 均不可用时，会自动尝试另一个。").addDropdown((d) => d.addOption("openai", "OpenAI").addOption("google", "Google").setValue(this.plugin.settings.llmProvider).onChange(async (v) => {
+    new import_obsidian5.Setting(containerEl).setName("Primary Provider").setDesc("首选 AI 提供商。").addDropdown((d) => d.addOption("openai", "OpenAI").addOption("google", "Google").setValue(this.plugin.settings.llmProvider).onChange(async (v) => {
       this.plugin.settings.llmProvider = v;
       await this.plugin.saveSettings();
       this.display();
+    }));
+    new import_obsidian5.Setting(containerEl).setName("API Key Strategy").setDesc("选择 API Key 的轮换方式。").addDropdown((d) => d.addOption("exhaustion", "顺序耗尽 (Exhaustion)").addOption("round-robin", "轮询均衡 (Round-Robin)").setValue(this.plugin.settings.apiKeyStrategy).onChange(async (v) => {
+      this.plugin.settings.apiKeyStrategy = v;
+      await this.plugin.saveSettings();
     }));
     if (this.plugin.settings.llmProvider === "openai") {
       new import_obsidian5.Setting(containerEl).setName("OpenAI Settings").setHeading();
@@ -499,6 +584,10 @@ var OAKSettingTab = class extends import_obsidian5.PluginSettingTab {
       this.addOpenAISettings(containerEl);
     }
     new import_obsidian5.Setting(containerEl).setName("Engine Settings").setHeading();
+    new import_obsidian5.Setting(containerEl).setName("Max Concurrency").setDesc("同时处理的任务数量 (滑动窗口大小)。建议设置为 3-5。").addSlider((slider) => slider.setLimits(1, 10, 1).setValue(this.plugin.settings.concurrency || 3).setDynamicTooltip().onChange(async (value) => {
+      this.plugin.settings.concurrency = value;
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian5.Setting(containerEl).setName("Output Folder").addText((t) => t.setValue(this.plugin.settings.output_dir).onChange(async (v) => {
       this.plugin.settings.output_dir = v;
       await this.plugin.saveSettings();
@@ -517,7 +606,7 @@ var OAKSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
   }
   addOpenAISettings(el) {
-    new import_obsidian5.Setting(el).setName("OpenAI Keys").setDesc("一行一个 Key。支持自动轮换和冷却。").addTextArea((t) => {
+    new import_obsidian5.Setting(el).setName("OpenAI Keys").setDesc("一行一个 Key。").addTextArea((t) => {
       t.setValue(this.plugin.settings.openaiApiKey).onChange(async (v) => {
         this.plugin.settings.openaiApiKey = v;
         await this.plugin.saveSettings();
@@ -613,6 +702,8 @@ var EventBus = class extends import_obsidian7.Events {
 // src/main.ts
 var DEFAULT_SETTINGS = {
   llmProvider: "openai",
+  apiKeyStrategy: "exhaustion",
+  // 【新增】默认使用耗尽模式
   openaiApiKey: "",
   openaiBaseUrl: "https://api.openai.com/v1",
   openaiModel: "gpt-3.5-turbo",
