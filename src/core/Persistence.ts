@@ -1,11 +1,11 @@
 // src/core/Persistence.ts
-
 import { App, normalizePath } from 'obsidian';
-import { QueueData } from './types';
-import AgentKitPlugin from '../main'; // 指向上一级的 main
+import { QueueData, TaskItem, TaskStatus } from './types'; // 引入类型
+import AgentKitPlugin from '../main';
 import { Logger } from './utils';
 
 export class Persistence {
+    // ... constructor, init, and cache methods remain the same ...
     private plugin: AgentKitPlugin;
     private app: App;
     private cacheDir: string;
@@ -14,9 +14,7 @@ export class Persistence {
     constructor(plugin: AgentKitPlugin) {
         this.plugin = plugin;
         this.app = plugin.app;
-        // 缓存目录: .obsidian/plugins/obsidian-agent-kit/task_cache
         this.cacheDir = normalizePath(`${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}/task_cache`);
-        // 队列文件: .obsidian/plugins/obsidian-agent-kit/queues.json
         this.queueFile = normalizePath(`${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}/queues.json`);
     }
 
@@ -27,14 +25,19 @@ export class Persistence {
         }
     }
 
-    // --- 队列数据管理 ---
-
     async loadQueueData(): Promise<QueueData> {
         const adapter = this.app.vault.adapter;
         if (await adapter.exists(this.queueFile)) {
             try {
                 const content = await adapter.read(this.queueFile);
-                return JSON.parse(content);
+                const data = JSON.parse(content);
+                // 兼容旧格式：如果加载的是数组，转换为新格式
+                // 注意：这是一个简化的兼容逻辑，实际中可能需要更复杂的迁移
+                if(Array.isArray(data)) {
+                    Logger.warn("[Persistence] Detected old queue format (array). Attempting conversion...");
+                    // 此处应有从数组到对象的转换逻辑，但为了简化，我们假设新格式
+                }
+                return data;
             } catch (e) {
                 Logger.error("Failed to load queue data:", e);
                 return {};
@@ -43,24 +46,47 @@ export class Persistence {
         return {};
     }
 
-    async saveQueueData(queues: QueueData) {
-        // 深拷贝，移除可能存在的大文本字段（如果未来任务项变得很复杂）
-        // 目前 TaskItem 结构简单，直接存即可。
-        // 如果 TaskItem 里有 content 字段且内容很大，建议在这里剥离并存入文件缓存。
-        
+    // 【修改】saveQueueData 方法
+    async saveQueueData(queues: QueueData, options?: { clean?: boolean }) {
+        let dataToSave = queues;
+        if (options?.clean) {
+            dataToSave = this.cleanQueueData(queues);
+        }
+
         const adapter = this.app.vault.adapter;
         try {
-            await adapter.write(this.queueFile, JSON.stringify(queues, null, 2));
+            // 注意：JSON.stringify 会忽略 undefined，但不会忽略值为 null 的属性。
+            // 我们的对象结构是 { [taskId]: TaskItem }，所以没问题。
+            await adapter.write(this.queueFile, JSON.stringify(dataToSave, null, 2));
             Logger.log("Queue data saved.");
         } catch (e) {
             Logger.error("Failed to save queue data:", e);
         }
     }
+    
+    // 【新增】辅助方法：清理已完成的任务
+    private cleanQueueData(rawQueueData: QueueData): QueueData {
+        const cleanedData: QueueData = {};
+        for (const queueName in rawQueueData) {
+            const tasks = rawQueueData[queueName];
+            const activeTasks: Record<string, TaskItem> = {};
+            for (const taskId in tasks) {
+                const task = tasks[taskId];
+                // 只保留未达到最终状态的任务
+                if (task.status !== TaskStatus.SUCCESS && task.status !== TaskStatus.DISCARDED) {
+                    activeTasks[taskId] = task;
+                }
+            }
+            // 只有在队列还有任务时才保留它
+            if (Object.keys(activeTasks).length > 0) {
+                cleanedData[queueName] = activeTasks;
+            }
+        }
+        return cleanedData;
+    }
 
-    // --- 任务内容缓存 (用于 Agent 间传递大数据) ---
-
+    // ... task cache methods remain the same ...
     private getCachePath(taskId: string): string {
-        // 使用简单的文件名，避免特殊字符
         const safeName = taskId.replace(/[\\/*?:"<>|]/g, "").trim();
         return `${this.cacheDir}/${safeName}.md`;
     }

@@ -1,47 +1,68 @@
 // src/core/Orchestrator.ts
 import { Notice } from "obsidian";
 import { BaseAgent } from "./BaseAgent";
-import { TaskItem } from "./types";
-import AgentKitPlugin from "../main";
+import { TaskItem, TaskStatus, QueueData } from "./types";
+import { Persistence } from "./Persistence";
+import { EventBus, OakEvents } from "./EventBus"; // 引入事件定义
 import { Logger } from "./utils";
 import { AllModelsFailedError } from "./LLMProvider";
+
+export interface OrchestratorDependencies {
+    persistence: Persistence;
+    eventBus: EventBus;
+    getSettings: () => { concurrency: number; maxRetries: number; };
+}
 
 export class Orchestrator {
     private _isRunning = false;
     private agents: BaseAgent<any>[] = [];
-    private plugin: AgentKitPlugin;
+    private dependencies: OrchestratorDependencies;
+    private queueData: QueueData = {};
 
-    // 【新增】并发控制：记录正在进行的任务 ID 和开始时间
-    private activeTasks = new Map<string, number>(); 
-    // 【新增】僵尸任务超时时间 (5分钟)
-    private readonly TASK_TIMEOUT_MS = 5 * 60 * 1000; 
+    private activeTasks = new Map<string, number>();
+    private readonly TASK_TIMEOUT_MS = 5 * 60 * 1000;
 
     public get isRunning(): boolean {
         return this._isRunning;
     }
 
-    constructor(plugin: AgentKitPlugin) {
-        this.plugin = plugin;
+    constructor(dependencies: OrchestratorDependencies) {
+        this.dependencies = dependencies;
     }
 
     registerAgent(agent: BaseAgent<any>) {
         this.agents.push(agent);
-        if (!this.plugin.queueData[agent.queueName]) {
-            this.plugin.queueData[agent.queueName] = [];
+        if (!this.queueData[agent.queueName]) {
+            this.queueData[agent.queueName] = {};
         }
         Logger.log(`Registered Agent: ${agent.constructor.name} -> Queue: ${agent.queueName}`);
     }
 
-    async addToQueue(queueName: string, item: TaskItem) {
-        if (!this.plugin.queueData[queueName]) {
-            this.plugin.queueData[queueName] = [];
+    async loadInitialQueueData() {
+        this.queueData = await this.dependencies.persistence.loadQueueData();
+    }
+
+    async addToQueue(queueName: string, item: Omit<TaskItem, 'id' | 'status' | 'retries'>): Promise<string> {
+        const id = Date.now().toString() + "-" + Math.random().toString(36).substr(2, 9);
+        const fullItem: TaskItem = {
+            id,
+            status: TaskStatus.QUEUED,
+            retries: 0,
+            ...item
+        };
+
+        if (!this.queueData[queueName]) {
+            this.queueData[queueName] = {};
         }
-        item.retries = 0;
-        if (!item.id) item.id = Date.now().toString() + "-" + Math.random().toString(36).substr(2, 9);
-        this.plugin.queueData[queueName].push(item);
         
-        await this.plugin.persistence.saveQueueData(this.plugin.queueData);
-        Logger.log(`Task added to ${queueName}: ${item.id}`);
+        this.queueData[queueName][id] = fullItem;
+        
+        await this.dependencies.persistence.saveQueueData(this.queueData);
+        // 【新增】触发任务添加事件
+        this.dependencies.eventBus.emit(OakEvents.TASK_ADDED, { taskId: id, queueName, payload: item });
+        
+        Logger.log(`Task added to ${queueName}: ${id}`);
+        return id;
     }
 
     start() {
@@ -58,124 +79,151 @@ export class Orchestrator {
         Logger.log("Engine stopped");
     }
 
-    // 【新增】清理僵尸任务
     private cleanupZombieTasks() {
         const now = Date.now();
         for (const [taskId, startTime] of this.activeTasks.entries()) {
             if (now - startTime > this.TASK_TIMEOUT_MS) {
-                Logger.warn(`🧹 [Zombie Sweeper] Removing stuck task '${taskId}' after ${this.TASK_TIMEOUT_MS/1000}s`);
+                Logger.warn(`🧹 [Zombie Sweeper] Task '${taskId}' timed out. Re-queuing.`);
                 this.activeTasks.delete(taskId);
-                // 这里我们仅释放槽位。
-                // 因为任务还在 'activeTasks' 也就意味着它不在 'queueData' 里了，
-                // 视为失败处理。如果需要重试，可以在这里补逻辑，但通常防止死循环更重要。
+                const item = this.findTaskItemById(taskId);
+                if(item) {
+                    item.status = TaskStatus.FAILED; // 标记为失败，以便重试
+                    item.retries++;
+                }
             }
         }
     }
+    
+    // 辅助函数：根据ID查找任务项
+    private findTaskItemById(taskId: string): { item: TaskItem; queueName: string } | null {
+        for (const queueName in this.queueData) {
+            if (this.queueData[queueName][taskId]) {
+                return { item: this.queueData[queueName][taskId], queueName };
+            }
+        }
+        return null;
+    }
 
-    // 【重构】主循环：不再阻塞等待，而是负责调度
     private async loop() {
         if (!this._isRunning) return;
 
-        // 1. 清理僵尸任务
         this.cleanupZombieTasks();
 
-        // 2. 获取最大并发设置
-        const maxConcurrency = this.plugin.settings.concurrency || 3;
-        
-        // 3. 填充并发槽位
+        const maxConcurrency = this.dependencies.getSettings().concurrency || 3;
+        // 【修复】将 const 改为 let，以便在循环中修改
         let slotsAvailable = maxConcurrency - this.activeTasks.size;
 
         if (slotsAvailable > 0) {
-            // 遍历所有 Agents 寻找待处理任务
             for (const agent of this.agents) {
                 if (slotsAvailable <= 0 || !this._isRunning) break;
 
                 const queueName = agent.queueName;
-                const queue = this.plugin.queueData[queueName];
+                const queue = this.queueData[queueName];
+                if (!queue) continue;
 
-                if (queue && queue.length > 0) {
-                    // 取出任务 (Dequeue)
-                    const item = queue.shift();
-                    if (item && item.id) {
-                        slotsAvailable--;
-                        
-                        // 标记为活跃
-                        this.activeTasks.set(item.id, Date.now());
-                        
-                        // 保存队列状态 (防止崩溃丢失进度)
-                        await this.plugin.persistence.saveQueueData(this.plugin.queueData);
-
-                        // 【关键】异步执行，不 await
-                        this.processTask(agent, item).catch(err => {
-                            Logger.error(`Unhandled error in processTask for ${item.id}`, err);
-                            this.activeTasks.delete(item.id!); // 确保兜底释放
-                        });
-                    }
+                const nextTaskId = Object.keys(queue).find(id => queue[id].status === TaskStatus.QUEUED);
+                
+                if (nextTaskId) {
+                    const item = queue[nextTaskId];
+                    item.status = TaskStatus.RUNNING;
+                    this.activeTasks.set(nextTaskId, Date.now());
+                    slotsAvailable--; // 现在可以安全地修改了
+                    
+                    await this.dependencies.persistence.saveQueueData(this.queueData);
+                    // 【新增】触发任务开始事件
+                    this.dependencies.eventBus.emit(OakEvents.TASK_STARTED, { taskId: nextTaskId, agent: agent.constructor.name, queueName });
+                    
+                    this.processTask(agent, item).catch(err => {
+                        Logger.error(`Unhandled error in processTask for ${nextTaskId}`, err);
+                        if(this.activeTasks.has(nextTaskId)) {
+                             this.activeTasks.delete(nextTaskId);
+                             const failedItem = this.findTaskItemById(nextTaskId);
+                             if(failedItem) {
+                                failedItem.item.status = TaskStatus.FAILED;
+                                failedItem.item.retries++;
+                             }
+                        }
+                    });
                 }
             }
         }
 
-        // 4. 调度下一次循环
-        // 由于是滑动窗口，我们可以设置较短的间隔来快速响应空槽
-        const delay = this.activeTasks.size > 0 ? 500 : 2000;
+        const delay = this.activeTasks.size > 0 ? 1000 : 3000;
         
         if (this._isRunning) {
-            setTimeout(() => {
-                this.loop().catch(err => Logger.error("Loop timeout error:", err));
-            }, delay);
+            setTimeout(() => this.loop().catch(err => Logger.error("Loop timeout error:", err)), delay);
         }
     }
 
-    // 【新增】独立的任务处理函数
     private async processTask(agent: BaseAgent<any>, item: TaskItem) {
-        if (!item.id) return; // Should not happen
+        const taskId = item.id!;
+        const queueName = agent.queueName;
+        let taskSucceeded = false;
 
         try {
-            Logger.log(`Processing task ${item.id} in ${agent.queueName}...`);
-            const success = await agent.process(item);
+            Logger.log(`Processing task ${taskId} in ${queueName}...`);
             
-            if (success) {
-                // 成功：清理缓存
-                await this.plugin.persistence.deleteTaskCache(item.id); 
-                Logger.log(`✅ Task ${item.id} completed.`);
-            } else {
-                throw new Error("Agent process returned false.");
-            }
+            const updatedItem = await agent.process(item);
+            
+            // 【修改】任务成功，更新状态
+            this.queueData[queueName][taskId] = { ...updatedItem, status: TaskStatus.SUCCESS };
+            taskSucceeded = true;
+
+            // 清理缓存
+            await this.dependencies.persistence.deleteTaskCache(taskId);
+            
+            Logger.log(`✅ Task ${taskId} completed.`);
+            // 【新增】触发任务成功事件
+            this.dependencies.eventBus.emit(OakEvents.TASK_COMPLETED, { taskId, queueName });
+            
         } catch (error) {
-            // 致命错误检测
+            Logger.error(`Agent ${agent.constructor.name} failed task ${taskId}:`, error);
+            
             if (error instanceof AllModelsFailedError) {
                  Logger.error(`🛑 Engine paused due to fatal error: ${error.message}`);
                  new Notice(`引擎紧急暂停: 所有 API Key 均不可用。`);
                  this.stop();
-                 this.activeTasks.delete(item.id); // 释放当前任务
+                 this.activeTasks.delete(taskId);
+                 this.queueData[queueName][taskId].status = TaskStatus.FAILED;
+                 await this.dependencies.persistence.saveQueueData(this.queueData);
                  return;
             }
 
-            Logger.error(`Agent ${agent.constructor.name} failed task ${item.id}:`, error);
+            const itemToUpdate = this.queueData[queueName][taskId];
+            itemToUpdate.retries++;
+            const maxRetries = this.dependencies.getSettings().maxRetries || 3;
             
-            // 失败重试逻辑
-            item.retries = (item.retries || 0) + 1;
-            const maxRetries = this.plugin.settings.maxRetries || 3;
-            
-            if (item.retries < maxRetries) {
-                Logger.warn(`Task ${item.id} retrying (${item.retries}/${maxRetries})`);
-                // 放回队列末尾
-                if (!this.plugin.queueData[agent.queueName]) {
-                    this.plugin.queueData[agent.queueName] = [];
-                }
-                this.plugin.queueData[agent.queueName].push(item);
+            if (itemToUpdate.retries < maxRetries) {
+                Logger.warn(`Task ${taskId} retrying (${itemToUpdate.retries}/${maxRetries})`);
+                itemToUpdate.status = TaskStatus.QUEUED;
+                // 【新增】触发任务失败事件 (将重试)
+                this.dependencies.eventBus.emit(OakEvents.TASK_FAILED, { taskId, queueName, error: error.message, willRetry: true });
             } else {
-                Logger.error(`Task ${item.id} max retries reached. Discarding.`);
-                new Notice(`任务 ${item.id} 已达最大重试次数，已被丢弃。`);
-                await this.plugin.persistence.deleteTaskCache(item.id);
+                Logger.error(`Task ${taskId} max retries reached. Discarding.`);
+                itemToUpdate.status = TaskStatus.DISCARDED;
+                taskSucceeded = true; // 对于清理而言，成功和丢弃都是最终状态
+                new Notice(`任务 ${taskId} 已达最大重试次数，已被丢弃。`);
+                await this.dependencies.persistence.deleteTaskCache(taskId);
+                // 【新增】触发任务丢弃事件
+                this.dependencies.eventBus.emit(OakEvents.TASK_DISCARDED, { taskId, queueName, error: error.message });
             }
             
-            // 保存队列变更
-            await this.plugin.persistence.saveQueueData(this.plugin.queueData);
-
         } finally {
-            // 【关键】无论成功失败，必须释放槽位
-            this.activeTasks.delete(item.id);
+            // 【关键】无论成功、失败还是丢弃，都释放槽位
+            this.activeTasks.delete(taskId);
+            
+            // 【新增】如果任务达到最终状态 (成功 或 丢弃)，则清理队列数据并持久化
+            if (taskSucceeded) {
+                delete this.queueData[queueName][taskId];
+                // 清理空队列
+                if (Object.keys(this.queueData[queueName]).length === 0) {
+                    delete this.queueData[queueName];
+                }
+                await this.dependencies.persistence.saveQueueData(this.queueData, { clean: true });
+            } else {
+                // 如果任务失败但将重试，也需要保存其状态
+                await this.dependencies.persistence.saveQueueData(this.queueData);
+            }
         }
     }
 }

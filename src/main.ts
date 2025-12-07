@@ -1,25 +1,27 @@
 // src/main.ts
-import { Plugin, Notice } from "obsidian";
-import { OAKSettings, QueueData } from "./core/types";
-import { Orchestrator } from "./core/Orchestrator";
+import { Plugin, Notice, App } from "obsidian";
+import { OAKSettings, QueueData, TaskItem, TaskStatus } from "./core/types";
+import { Orchestrator, OrchestratorDependencies } from "./core/Orchestrator";
 import { LLMProvider } from "./core/LLMProvider";
 import { Persistence } from "./core/Persistence";
 import { Logger } from "./core/utils";
 import { GeneratorAgent } from "./agents/GeneratorAgent"; 
 import { OAKSettingTab } from "./settings";
 import { InputModal } from "./InputModal"; 
-import { OakAPI } from "./api"; // 引入 API 定义
-import { EventBus } from "./core/EventBus"; // 引入 EventBus
+import { OakAPI } from "./api";
+import { EventBus } from "./core/EventBus";
+import { BaseAgent, IAgentContext } from "./core/BaseAgent";
 
 const DEFAULT_SETTINGS: OAKSettings = {
     llmProvider: "openai",
-    apiKeyStrategy: "exhaustion", // 【新增】默认使用耗尽模式
+    apiKeyStrategy: 'exhaustion',
     openaiApiKey: "",
     openaiBaseUrl: "https://api.openai.com/v1",
     openaiModel: "gpt-3.5-turbo",
     googleApiKey: "",
     googleModel: "gemini-1.5-flash",
     maxRetries: 3,
+    concurrency: 3,
     prompt_generator: "请详细解释概念: {concept}，包含定义、原理和应用。",
     output_dir: "KnowledgeGraph",
     debug_mode: false
@@ -27,40 +29,11 @@ const DEFAULT_SETTINGS: OAKSettings = {
 
 export default class AgentKitPlugin extends Plugin {
     settings: OAKSettings;
-    queueData: QueueData; 
     
-    orchestrator: Orchestrator;
-    llm: LLMProvider;
-    persistence: Persistence;
-    eventBus: EventBus;
-
-    // --- 核心：暴露 API 给其他插件 ---
-    public get api(): OakAPI {
-        return {
-            version: this.manifest.version,
-            registerAgent: (agent) => this.orchestrator.registerAgent(agent),
-            
-            // 1. 异步任务调度
-            dispatch: async (queueName, payload, sourcePluginId) => {
-                // 为外部调用注入来源ID
-                const item = { ...payload, sourcePluginId: sourcePluginId || 'External' };
-                await this.orchestrator.addToQueue(queueName, item);
-                // 确保引擎已启动
-                if (!this.orchestrator.isRunning) this.orchestrator.start();
-                return item.id; 
-            },
-
-            // 2. [新增] 同步/即时对话接口
-            // 供 Lite Chat 等插件直接调用，跳过队列
-            chat: async (prompt: string) => {
-                return await this.llm.chat(prompt);
-            },
-
-            on: (event, cb) => this.eventBus.on(event, cb),
-            off: (event, cb) => this.eventBus.off(event, cb)
-        };
-    }
-    // ------------------------------
+    private persistence!: Persistence;
+    private eventBus!: EventBus;
+    private llmProvider!: LLMProvider;
+    private orchestrator!: Orchestrator;
 
     async onload() {
         await this.loadSettings();
@@ -69,32 +42,46 @@ export default class AgentKitPlugin extends Plugin {
         this.persistence = new Persistence(this);
         await this.persistence.init();
 
-        this.queueData = await this.persistence.loadQueueData();
-        
-        // 初始化 EventBus
         this.eventBus = EventBus.getInstance();
-        
-        if (!await this.app.vault.adapter.exists(this.settings.output_dir)) {
-            await this.app.vault.createFolder(this.settings.output_dir);
-        }
+        this.llmProvider = new LLMProvider(() => this.settings);
 
+        const dependencies: OrchestratorDependencies = {
+            persistence: this.persistence,
+            eventBus: this.eventBus,
+            getSettings: () => this.settings,
+        };
+        this.orchestrator = new Orchestrator(dependencies);
+        await this.orchestrator.loadInitialQueueData();
+
+        // 【修复】创建独立的 getter 函数以避免 .bind(this) 语法错误
+        const getPluginSettings = () => this.settings;
+
+        const agentContext: IAgentContext = {
+            get settings() { return getPluginSettings(); },
+            app: this.app,
+            persistence: {
+                saveTaskCache: (id, content) => this.persistence.saveTaskCache(id, content),
+                loadTaskCache: (id) => this.persistence.loadTaskCache(id),
+                deleteTaskCache: (id) => this.persistence.deleteTaskCache(id),
+            },
+            orchestrator: {
+                addToQueue: async (queueName, item) => this.orchestrator.addToQueue(queueName, item),
+            },
+            triggerEvent: (event, data) => this.eventBus.emit(event, data),
+        };
+
+        this.orchestrator.registerAgent(new GeneratorAgent(agentContext, this.llmProvider));
+        
         this.addSettingTab(new OAKSettingTab(this.app, this));
 
-        this.llm = new LLMProvider(() => this.settings);
-        this.orchestrator = new Orchestrator(this);
-
-        // 注册内置 Agent
-        this.orchestrator.registerAgent(new GeneratorAgent(this, this.llm));
-
-        // --- Commands & UI ---
         this.addCommand({
             id: 'add-custom-concept',
             name: '添加新概念到生成队列',
             callback: () => {
                 new InputModal(this.app, (concept) => {
-                    // 内部调用也可以走 dispatch，保持一致性
                     this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, 'OAK-GUI')
-                        .then(() => new Notice(`已将 '${concept}' 加入队列。`));
+                        .then(taskId => new Notice(`已将 '${concept}' 加入队列 (ID: ${taskId})。`))
+                        .catch(err => new Notice(`添加到队列失败: ${err.message}`));
                 }).open();
             }
         });
@@ -113,7 +100,9 @@ export default class AgentKitPlugin extends Plugin {
         
         this.addRibbonIcon('bot', 'OAK: 添加新概念', () => {
             new InputModal(this.app, (concept) => {
-                this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, 'OAK-Ribbon');
+                this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, 'OAK-Ribbon')
+                    .then(taskId => new Notice(`已将 '${concept}' 加入队列 (ID: ${taskId})。`))
+                    .catch(err => new Notice(`添加到队列失败: ${err.message}`));
             }).open();
         });
         
@@ -122,16 +111,60 @@ export default class AgentKitPlugin extends Plugin {
 
     onunload() {
         this.orchestrator.stop();
-        // 清理事件监听，如果有的话
         Logger.log("OAK Agent Kit unloaded.");
     }
 
     async loadSettings() {
-        const loaded = await this.loadData();
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     }
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+    
+    public get api(): OakAPI {
+        return {
+            version: this.manifest.version,
+            registerAgent: (agent: BaseAgent<any>) => {
+                // 【修复】为动态注册的 Agent 创建上下文，修复 .bind(this)
+                const getApiSettings = () => this.settings;
+                const agentContext: IAgentContext = {
+                    get settings() { return getApiSettings(); },
+                    app: this.app,
+                    persistence: {
+                        saveTaskCache: (id, content) => this.persistence.saveTaskCache(id, content),
+                        loadTaskCache: (id) => this.persistence.loadTaskCache(id),
+                        deleteTaskCache: (id) => this.persistence.deleteTaskCache(id),
+                    },
+                    orchestrator: {
+                        addToQueue: async (queueName, item) => this.orchestrator.addToQueue(queueName, item),
+                    },
+                    triggerEvent: (event, data) => this.eventBus.emit(event, data),
+                };
+                
+                // 假设外部传入的 agent 已经有了 LLMProvider，这里我们只重新注入 context
+                // 一个更健壮的设计可能需要 agent 暴露一个 setContext 方法
+                // 但为了遵循当前结构，我们直接注册。
+                // 注意：这里假设 agent 的 LLMProvider 已经被正确设置。
+                this.orchestrator.registerAgent(agent); 
+            },
+            dispatch: async (queueName: string, payload: any, sourcePluginId?: string): Promise<string> => {
+                const item = { ...payload, sourcePluginId: sourcePluginId || 'External' };
+                const taskId = await this.orchestrator.addToQueue(queueName, item);
+                if (!this.orchestrator.isRunning) {
+                    this.orchestrator.start();
+                }
+                return taskId;
+            },
+            chat: async (prompt: string): Promise<string> => {
+                return await this.llmProvider.chat(prompt);
+            },
+            on: (event: string, callback: (...data: any) => void): void => {
+                this.eventBus.on(event, callback);
+            },
+            off: (event: string, callback: (...data: any) => void): void => {
+                this.eventBus.off(event, callback);
+            }
+        };
     }
 }
