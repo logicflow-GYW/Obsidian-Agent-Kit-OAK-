@@ -32,6 +32,7 @@ export interface OAKSettings {
     // --- 业务配置 ---
     maxRetries: number;
     concurrency: number;
+    requestTimeout: number; // 【新增】请求超时时间（秒）
     prompt_generator: string;
     output_dir: string;
     

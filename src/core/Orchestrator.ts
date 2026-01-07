@@ -1,16 +1,16 @@
 // src/core/Orchestrator.ts
 import { Notice } from "obsidian";
 import { BaseAgent } from "./BaseAgent";
-import { TaskItem, TaskStatus, QueueData } from "./types";
+import { TaskItem, TaskStatus, QueueData, OAKSettings } from "./types"; // 【新增】引入 OAKSettings
 import { Persistence } from "./Persistence";
-import { EventBus, OakEvents } from "./EventBus"; // 引入事件定义
+import { EventBus, OakEvents } from "./EventBus"; 
 import { Logger } from "./utils";
 import { AllModelsFailedError } from "./LLMProvider";
 
 export interface OrchestratorDependencies {
     persistence: Persistence;
     eventBus: EventBus;
-    getSettings: () => { concurrency: number; maxRetries: number; };
+    getSettings: () => OAKSettings; // 【修改】使用完整设置类型
 }
 
 export class Orchestrator {
@@ -20,7 +20,9 @@ export class Orchestrator {
     private queueData: QueueData = {};
 
     private activeTasks = new Map<string, number>();
-    private readonly TASK_TIMEOUT_MS = 5 * 60 * 1000;
+    
+    // 【修改】移除硬编码常量，改为在 cleanupZombieTasks 中动态计算
+    // private readonly TASK_TIMEOUT_MS = 5 * 60 * 1000;
 
     public get isRunning(): boolean {
         return this._isRunning;
@@ -81,9 +83,15 @@ export class Orchestrator {
 
     private cleanupZombieTasks() {
         const now = Date.now();
+        
+        // 【新增】动态计算僵尸任务超时阈值
+        // 始终比 API 请求超时多 5 分钟 (300秒) 的缓冲时间，防止误杀正在等待 LLM 响应的任务
+        const requestTimeout = this.dependencies.getSettings().requestTimeout || 300;
+        const taskTimeoutMs = (requestTimeout + 300) * 1000; 
+
         for (const [taskId, startTime] of this.activeTasks.entries()) {
-            if (now - startTime > this.TASK_TIMEOUT_MS) {
-                Logger.warn(`🧹 [Zombie Sweeper] Task '${taskId}' timed out. Re-queuing.`);
+            if (now - startTime > taskTimeoutMs) {
+                Logger.warn(`🧹 [Zombie Sweeper] Task '${taskId}' timed out (Threshold: ${taskTimeoutMs/1000}s). Re-queuing.`);
                 this.activeTasks.delete(taskId);
                 const item = this.findTaskItemById(taskId);
                 if(item) {

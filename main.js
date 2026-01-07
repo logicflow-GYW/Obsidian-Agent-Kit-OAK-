@@ -44,7 +44,7 @@ var _Logger = class {
   }
   static formatMessage(level, namespace, message) {
     return {
-      timestamp: new Date().toISOString(),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
       level,
       namespace,
       message
@@ -170,8 +170,8 @@ var LLMProvider = class {
     this.keyUsageOpenAI = /* @__PURE__ */ new Map();
     this.keyUsageGoogle = /* @__PURE__ */ new Map();
     this.COOLDOWN_SECONDS = 300;
-    // 【新增】默认超时 90 秒
-    this.REQUEST_TIMEOUT_MS = 9e4;
+    // 【修改】移除硬编码的超时常量，改用设置控制
+    // private readonly REQUEST_TIMEOUT_MS = 90000;
     this.openAIKeyIndex = 0;
     this.googleKeyIndex = 0;
   }
@@ -194,12 +194,14 @@ var LLMProvider = class {
       return "";
     }
   }
-  // 【新增】带超时的请求包装器
+  // 【修改】带超时的请求包装器，现在使用动态超时时间
   async _requestWithTimeout(requestParams) {
+    const timeoutSeconds = this.getSettings().requestTimeout || 300;
+    const timeoutMs = timeoutSeconds * 1e3;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`API Request timed out after ${this.REQUEST_TIMEOUT_MS / 1e3}s`));
-      }, this.REQUEST_TIMEOUT_MS);
+        reject(new Error(`API Request timed out after ${timeoutSeconds}s`));
+      }, timeoutMs);
       (0, import_obsidian3.requestUrl)(requestParams).then((response) => {
         clearTimeout(timer);
         resolve(response);
@@ -379,9 +381,10 @@ var Orchestrator = class {
     this.agents = [];
     this.queueData = {};
     this.activeTasks = /* @__PURE__ */ new Map();
-    this.TASK_TIMEOUT_MS = 5 * 60 * 1e3;
     this.dependencies = dependencies;
   }
+  // 【修改】移除硬编码常量，改为在 cleanupZombieTasks 中动态计算
+  // private readonly TASK_TIMEOUT_MS = 5 * 60 * 1000;
   get isRunning() {
     return this._isRunning;
   }
@@ -427,9 +430,11 @@ var Orchestrator = class {
   }
   cleanupZombieTasks() {
     const now = Date.now();
+    const requestTimeout = this.dependencies.getSettings().requestTimeout || 300;
+    const taskTimeoutMs = (requestTimeout + 300) * 1e3;
     for (const [taskId, startTime] of this.activeTasks.entries()) {
-      if (now - startTime > this.TASK_TIMEOUT_MS) {
-        Logger.warn(`🧹 [Zombie Sweeper] Task '${taskId}' timed out. Re-queuing.`);
+      if (now - startTime > taskTimeoutMs) {
+        Logger.warn(`🧹 [Zombie Sweeper] Task '${taskId}' timed out (Threshold: ${taskTimeoutMs / 1e3}s). Re-queuing.`);
         this.activeTasks.delete(taskId);
         const item = this.findTaskItemById(taskId);
         if (item) {
@@ -793,6 +798,13 @@ var OAKSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.plugin.settings.concurrency = value;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian6.Setting(containerEl).setName("Request Timeout (Seconds)").setDesc("LLM 请求超时时间。如果使用推理模型（如 o1, R1），请设置较长时间（建议 600秒以上）。").addText((text) => text.setPlaceholder("300").setValue(String(this.plugin.settings.requestTimeout || 300)).onChange(async (value) => {
+      const num = parseInt(value);
+      if (!isNaN(num) && num > 0) {
+        this.plugin.settings.requestTimeout = num;
+        await this.plugin.saveSettings();
+      }
+    }));
     new import_obsidian6.Setting(containerEl).setName("Max Retries").setDesc("任务失败后的最大重试次数。").addText((text) => text.setPlaceholder("3").setValue(String(this.plugin.settings.maxRetries)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num > 0) {
@@ -871,20 +883,24 @@ var InputModal = class extends import_obsidian7.Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h2", { text: "🌱 播种新概念" });
+    contentEl.createEl("h2", { text: "🌱 批量播种新概念" });
     let inputElement;
-    new import_obsidian7.Setting(contentEl).setName("输入概念名称").setDesc("输入你想生成的知识点，例如：'第一性原理'").addText((text) => {
+    new import_obsidian7.Setting(contentEl).setName("输入概念名称").setDesc("输入你想生成的知识点，每行一个。").addTextArea((text) => {
       inputElement = text.inputEl;
+      text.inputEl.rows = 10;
+      text.inputEl.style.width = "100%";
+      text.inputEl.style.fontFamily = "monospace";
       text.onChange((value) => {
         this.result = value;
       });
-      text.inputEl.addEventListener("keypress", (e) => {
-        if (e.key === "Enter") {
+      text.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
           this.submit();
         }
       });
     });
-    new import_obsidian7.Setting(contentEl).addButton((btn) => btn.setButtonText("添加到队列").setCta().onClick(() => {
+    new import_obsidian7.Setting(contentEl).addButton((btn) => btn.setButtonText("添加到队列 (Ctrl+Enter)").setCta().onClick(() => {
       this.submit();
     }));
     setTimeout(() => inputElement == null ? void 0 : inputElement.focus(), 0);
@@ -892,7 +908,10 @@ var InputModal = class extends import_obsidian7.Modal {
   submit() {
     if (this.result && this.result.trim().length > 0) {
       this.close();
-      this.onSubmit(this.result.trim());
+      const concepts = this.result.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
+      if (concepts.length > 0) {
+        this.onSubmit(concepts);
+      }
     } else {
       this.close();
     }
@@ -914,6 +933,7 @@ var DEFAULT_SETTINGS = {
   googleModel: "gemini-1.5-flash",
   maxRetries: 3,
   concurrency: 3,
+  requestTimeout: 300,
   prompt_generator: "请详细解释概念: {concept}，包含定义、原理和应用。",
   output_dir: "KnowledgeGraph",
   debug_mode: false
@@ -955,8 +975,12 @@ var AgentKitPlugin = class extends import_obsidian8.Plugin {
       id: "add-custom-concept",
       name: "添加新概念到生成队列",
       callback: () => {
-        new InputModal(this.app, (concept) => {
-          this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, "OAK-GUI").then((taskId) => new import_obsidian8.Notice(`已将 '${concept}' 加入队列 (ID: ${taskId})。`)).catch((err) => new import_obsidian8.Notice(`添加到队列失败: ${err.message}`));
+        new InputModal(this.app, (concepts) => {
+          let count = 0;
+          concepts.forEach((concept) => {
+            this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, "OAK-GUI").then(() => count++).catch((err) => Logger.error(`Failed to dispatch ${concept}:`, err));
+          });
+          new import_obsidian8.Notice(`正在将 ${concepts.length} 个概念加入后台队列...`);
         }).open();
       }
     });
@@ -972,8 +996,12 @@ var AgentKitPlugin = class extends import_obsidian8.Plugin {
       }
     });
     this.addRibbonIcon("bot", "OAK: 添加新概念", () => {
-      new InputModal(this.app, (concept) => {
-        this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, "OAK-Ribbon").then((taskId) => new import_obsidian8.Notice(`已将 '${concept}' 加入队列 (ID: ${taskId})。`)).catch((err) => new import_obsidian8.Notice(`添加到队列失败: ${err.message}`));
+      new InputModal(this.app, (concepts) => {
+        let count = 0;
+        concepts.forEach((concept) => {
+          this.api.dispatch(GeneratorAgent.QUEUE_NAME, { concept }, "OAK-Ribbon").then(() => count++).catch((err) => Logger.error(`Failed to dispatch ${concept}:`, err));
+        });
+        new import_obsidian8.Notice(`正在将 ${concepts.length} 个概念加入后台队列...`);
       }).open();
     });
     Logger.log("OAK Agent Kit (Framework Mode) loaded.");

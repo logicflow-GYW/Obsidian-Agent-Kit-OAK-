@@ -19,8 +19,8 @@ export class LLMProvider {
     private keyUsageGoogle = new Map<string, KeyUsageStatus>();
     private readonly COOLDOWN_SECONDS = 300; 
     
-    // 【新增】默认超时 90 秒
-    private readonly REQUEST_TIMEOUT_MS = 90000;
+    // 【修改】移除硬编码的超时常量，改用设置控制
+    // private readonly REQUEST_TIMEOUT_MS = 90000;
 
     private openAIKeyIndex = 0;
     private googleKeyIndex = 0;
@@ -50,12 +50,15 @@ export class LLMProvider {
         }
     }
 
-    // 【新增】带超时的请求包装器
+    // 【修改】带超时的请求包装器，现在使用动态超时时间
     private async _requestWithTimeout(requestParams: RequestUrlParam): Promise<any> {
+        const timeoutSeconds = this.getSettings().requestTimeout || 300; // 默认300秒兜底
+        const timeoutMs = timeoutSeconds * 1000;
+
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
-                reject(new Error(`API Request timed out after ${this.REQUEST_TIMEOUT_MS / 1000}s`));
-            }, this.REQUEST_TIMEOUT_MS);
+                reject(new Error(`API Request timed out after ${timeoutSeconds}s`));
+            }, timeoutMs);
 
             requestUrl(requestParams)
                 .then(response => {

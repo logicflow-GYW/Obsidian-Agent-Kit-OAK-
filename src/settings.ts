@@ -127,6 +127,21 @@ export class OAKSettingTab extends PluginSettingTab {
                     this.plugin.settings.concurrency = value;
                     await this.plugin.saveSettings();
                 }));
+        
+        // 【新增】Request Timeout 设置
+        new Setting(containerEl)
+            .setName("Request Timeout (Seconds)")
+            .setDesc("LLM 请求超时时间。如果使用推理模型（如 o1, R1），请设置较长时间（建议 600秒以上）。")
+            .addText(text => text
+                .setPlaceholder("300")
+                .setValue(String(this.plugin.settings.requestTimeout || 300))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num > 0) {
+                        this.plugin.settings.requestTimeout = num;
+                        await this.plugin.saveSettings();
+                    }
+                }));
 
         new Setting(containerEl)
             .setName("Max Retries")
